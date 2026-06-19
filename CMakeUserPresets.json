@@ -1,0 +1,63 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "cth-debug",
+      "hidden": true,
+      "cacheVariables": {
+        "cth_ROOT": "${sourceDir}/../cth/out/install/msvc_debug"
+      }
+    },
+    {
+      "name": "cth-release",
+      "hidden": true,
+      "cacheVariables": {
+        "cth_ROOT": "${sourceDir}/../cth/out/install/msvc_release"
+      }
+    },
+    {
+      "name": "lib-debug",
+      "hidden": true,
+      "inherits": [ "cth-debug" ]
+    },
+    {
+      "name": "lib-release",
+      "hidden": true,
+      "inherits": [ "cth-release" ]
+    },
+    {
+      "name": "debug-base",
+      "hidden": true,
+      "inherits": [ "global-debug-base", "lib-debug" ]
+    },
+    {
+      "name": "release-base",
+      "hidden": true,
+      "inherits": [ "global-release-base", "lib-release" ]
+    },
+    {
+      "name": "msvc_debug",
+      "inherits": [
+        "msvc-base",
+        "debug-base"
+      ]
+    },
+    {
+      "name": "msvc_release",
+      "inherits": [
+        "msvc-base",
+        "release-base"
+      ]
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "msvc_debug",
+      "configurePreset": "msvc_debug"
+    },
+    {
+      "name": "msvc_release",
+      "configurePreset": "msvc_release"
+    }
+  ]
+}
