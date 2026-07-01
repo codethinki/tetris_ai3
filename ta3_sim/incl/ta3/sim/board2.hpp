@@ -18,10 +18,10 @@
 namespace ta3::sim {
 
 /**
- * @brief occupancy-only tetris board backed by one bit-column per board column
- * @note bit @c y of a column word marks cell (column, @c y) as occupied. bit 0 is the top row,
+ * occupancy-only tetris board backed by one bit-column per board column
+ * @details bit @c y of a column word marks cell (column, @c y) as occupied. bit 0 is the top row,
  *  so the top-most occupied cell of a column is its @c std::countr_zero
- * @note only whole pieces can be placed. there is no per-cell mutation on purpose, the board owns
+ * @details only whole pieces can be placed. there is no per-cell mutation on purpose, the board owns
  *  all geometry
  */
 class Board2 {
@@ -29,55 +29,82 @@ public:
     constexpr Board2() = default;
 
     /**
-     * @brief checks whether @ref type at @ref orientation fits at @ref offset
-     * @return true if every block is in bounds and on a free cell
+     * checks if @ref PieceType can be placed with @ref Orientation on @ref offset
+     * @param offset place offset
      */
-    [[nodiscard]] constexpr bool available(PieceType type, Orientation orientation, vec2 offset) const;
+    [[nodiscard]] constexpr bool available(PieceType, Orientation, vec2 offset) const;
 
     /**
-     * @brief resolves the straight hard-drop landing offset
+     * resolves the drop location
      * @pre @ref offset is legal (passes @ref available), so the piece always lands
+     * @post offset is legal placement location
      */
-    [[nodiscard]] constexpr vec2 dropPlace(PieceType type, Orientation orientation, vec2 offset) const;
+    [[nodiscard]] constexpr vec2 dropLocation(PieceType, Orientation, vec2 offset) const;
 
     /**
-     * @brief resolves the hard-drop landing offset, guarding the precondition of @ref dropPlace
+     * drop places @ref PieceType , guarding the precondition of @ref dropPlace
      * @return the landing offset, or std::nullopt if @ref offset is not legal
      */
-    [[nodiscard]] constexpr std::optional<vec2> optDropPlace(
-        PieceType type,
-        Orientation orientation,
+    [[nodiscard]] constexpr std::optional<vec2> optDropLocation(
+        PieceType,
+        Orientation,
         vec2 offset
     ) const;
 
-    /**
-     * @brief locks @ref type at @ref orientation into @ref offset
-     * @pre @ref offset is @ref available
-     */
-    constexpr void place(PieceType type, Orientation orientation, vec2 offset);
+    constexpr void dropPlace(PieceType, Orientation, vec2 offset);
+    [[nodiscard]] constexpr bool optDropPlace(PieceType, Orientation, vec2 offset);
 
     /**
-     * @brief clears every full row and collapses the survivors downward
+     * locks @ref type at @ref orientation into @ref offset
+     * @pre @ref offset is @ref available
+     */
+    constexpr void place(PieceType, Orientation, vec2 offset);
+
+    /**
+     * clears lines
      * @return the number of cleared rows
      */
     constexpr size_t clearLines();
 
-    /** @brief counts the empty cells trapped below the surface across all columns */
+    /** counts the empty cells trapped below the surface across all columns */
     [[nodiscard]] constexpr size_t holes() const;
 
-    /** @brief root of the squared height differences between adjacent columns */
+    /** root of the squared height differences between adjacent columns */
     [[nodiscard]] constexpr double roughness() const;
 
-    /** @brief number of fully occupied rows */
+    /** number of fully occupied rows */
     [[nodiscard]] constexpr size_t fullLines() const { return static_cast<size_t>(std::popcount(fullRowsMask())); }
 
-    /** @brief the raw bit-column of board column @ref x; bit @c y marks cell (@ref x, @c y) occupied */
+    /**
+     * the raw bit-column of board column.
+     * @details @ref x; bit @c y marks cell (@ref x, @c y) occupied 
+     */
     [[nodiscard]] constexpr uint32_t raw_column(size_t x) const { return _cols[x]; }
 
-    /** @brief stack height of column @ref x: rows from its top-most occupied cell down, 0 when empty */
-    [[nodiscard]] constexpr size_t height(size_t x) const { return HEIGHT - static_cast<size_t>(top(static_cast<int>(x))); }
+    /**
+     * stack height of column
+     * @details @ref x: rows from its top-most occupied cell down, 0 when empty 
+     */
+    [[nodiscard]] constexpr size_t height(size_t x) const {
+        return HEIGHT - static_cast<size_t>(top(static_cast<int>(x)));
+    }
+
+    /** mirror across the vertical axis (reverses the column order) */
+    [[nodiscard]] constexpr Board2 vFlipped() const {
+        Board2 flipped;
+        for(auto x = 0uz; x < WIDTH; ++x)
+            flipped._cols[x] = _cols[WIDTH - 1 - x];
+        return flipped;
+    }
+
+    /** canonical mirror form: the smaller of the board and its @ref vFlipped */
+    [[nodiscard]] constexpr Board2 canonical() const {
+        auto const flipped = vFlipped();
+        return flipped < *this ? flipped : *this;
+    }
 
     friend constexpr bool operator==(Board2 const&, Board2 const&) = default;
+    friend constexpr auto operator<=>(Board2 const&, Board2 const&) = default;
 
 private:
     using column_t = uint32_t;
@@ -90,21 +117,26 @@ private:
     static constexpr column_t FLOOR = column_t{1} << HEIGHT;
 
     /**
-     * @brief whether a piece spanning @ref width columns from board column @ref first, with
-     *  y-origin @ref y, sits fully on the board
+     * checks [first, first + with) in [0, WIDTH) and y in [0, HEIGHT)
      */
     [[nodiscard]] static constexpr bool offsetInBounds(int first, size_t width, int y);
 
     /**
-     * @brief rows the piece can fall from @ref offset before landing
      * @pre @ref offset is legal
+     * @post offset.y + return is legal
      */
     [[nodiscard]] constexpr int dropDistance(piece_columns2_t const& piece, vec2 offset) const;
 
-    /** top-most occupied row of @ref column, or @ref HEIGHT when empty, bounded by [0, HEIGHT] */
+    /**
+     * top-most occupied row of a column word
+     * @details @ref column, or @ref HEIGHT when empty, bounded by [0, HEIGHT]
+     */
     [[nodiscard]] static constexpr int columnTop(column_t column) { return std::countr_zero(column | FLOOR); }
 
-    /** y of the top-most occupied cell in column @ref x, or @ref HEIGHT for an empty column */
+    /**
+     * y of the top-most occupied cell in column
+     * @details @ref x, or @ref HEIGHT for an empty column
+     */
     [[nodiscard]] constexpr int top(int x) const { return columnTop(_cols[x]); }
 
     /** empty cells trapped below the surface of column @ref x */
@@ -114,7 +146,7 @@ private:
     [[nodiscard]] constexpr column_t fullRowsMask() const;
 
     /**
-     * @brief removes a single full row from @ref col and drops the survivors above it down by one
+     * removes a single full row from @ref col and drops the survivors above it down by one
      * @param col column word to compact
      * @param row single-bit mask of the row being cleared
      * @return the compacted column
@@ -122,7 +154,7 @@ private:
     [[nodiscard]] static constexpr column_t clearLine(column_t col, column_t row);
 
     /**
-     * @brief removes the rows flagged in @ref full_lines from @ref col and drops the survivors down
+     * removes the rows flagged in @ref full_lines from @ref col and drops the survivors down
      * @param col column word to compact
      * @param full_lines mask of the rows being cleared
      * @return the compacted column with the freed rows left empty at the top
@@ -202,16 +234,30 @@ constexpr int Board2::dropDistance(piece_columns2_t const& piece, vec2 offset) c
     return minDrop;
 }
 
-constexpr vec2 Board2::dropPlace(PieceType type, Orientation orientation, vec2 offset) const {
+constexpr vec2 Board2::dropLocation(PieceType type, Orientation orientation, vec2 offset) const {
     auto const piece = piece_columns2(type, orientation);
     return vec2{offset.x, offset.y + dropDistance(piece, offset)};
 }
 
-constexpr std::optional<vec2> Board2::optDropPlace(PieceType type, Orientation orientation, vec2 offset) const {
+constexpr std::optional<vec2> Board2::optDropLocation(PieceType type, Orientation orientation, vec2 offset) const {
     if(!available(type, orientation, offset))
         return std::nullopt;
-    return dropPlace(type, orientation, offset);
+    return dropLocation(type, orientation, offset);
 }
+
+constexpr void Board2::dropPlace(PieceType type, Orientation o, vec2 offset) {
+    place(type, o, dropLocation(type, o, offset));
+}
+constexpr bool Board2::optDropPlace(PieceType type, Orientation o, vec2 offset) {
+    auto const loc = optDropLocation(type, o, offset);
+
+    if(!loc)
+        return false;
+
+    place(type, o, *loc);
+    return true;
+}
+
 
 constexpr void Board2::place(PieceType type, Orientation orientation, vec2 offset) {
     CTH_CRITICAL(!available(type, orientation, offset), "place location must be available") {}

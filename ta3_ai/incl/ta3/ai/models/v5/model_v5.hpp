@@ -46,10 +46,16 @@ class ModelV5 {
 public:
     static constexpr size_t INPUTS = V5_INPUTS;
     static constexpr size_t OUTPUTS = V5_OUT_SIZE;
-    using stats_t = StatsV4;
+    static constexpr glm::dvec2 BOUNDS{-2, 2};
+
+    using tetris_stats_t = TetrisStatsV4;
     using input_matrix_t = v5_input_matrix;
 
-    /** @brief encodes one candidate into @ref out (exactly @ref INPUTS values): next piece, held, then stats */
+
+    /**
+     * @brief encodes one candidate: the next piece, the held piece, then the board stats
+     * @param[out] out exactly @ref INPUTS values to overwrite
+     */
     static constexpr void extractInputs(parse_inputs_t const& in, std::span<data_t> out) {
         out[NEXT_PIECE] = static_cast<data_t>(in.lookahead.empty() ? *sim::PieceType::COUNT : *in.lookahead.front());
         out[HELD] = static_cast<data_t>(*in.stats.heldPiece());
@@ -65,6 +71,9 @@ public:
 
     ModelV5() : _net{std::make_unique<v5_out>()} { init(); }
     explicit ModelV5(std::span<double const> weights);
+
+    /** @brief overwrites the net weights in place (no re-allocation), for reuse across evaluations */
+    void loadWeights(std::span<double const> weights);
 
     [[nodiscard]] std::array<ai::data_t, OUTPUTS> forward(std::span<ai::data_t const, INPUTS> input) const;
 

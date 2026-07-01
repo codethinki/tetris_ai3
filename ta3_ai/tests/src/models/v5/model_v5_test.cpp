@@ -14,18 +14,18 @@ namespace ta3::ai {
 namespace {
 
     // a board with one O placed and its stats projected, so the feature vector is non-trivial
-    StatsV4 played_stats(sim::Board2& board) {
-        auto const landing = board.dropPlace(sim::PieceType::O, sim::Orientation::TOP, sim::vec2{0, 0});
+    TetrisStatsV4 played_stats(sim::Board2& board) {
+        auto const landing = board.dropLocation(sim::PieceType::O, sim::Orientation::TOP, sim::vec2{0, 0});
         board.place(sim::PieceType::O, sim::Orientation::TOP, landing);
 
-        StatsV4 stats{};
+        TetrisStatsV4 stats{};
         stats.advance(board.fullLines(), board, sim::PieceType::O, sim::PieceType::COUNT);
         return stats;
     }
 
     std::array<ai::data_t, ModelV5::INPUTS> make_v5_buffer() {
         sim::Board2 board{};
-        StatsV4 const stats = played_stats(board);
+        auto const stats = played_stats(board);
         std::array<sim::PieceType, 1> const lookahead{sim::PieceType::T};
 
         std::array<ai::data_t, ModelV5::INPUTS> buffer{};
@@ -43,7 +43,7 @@ V5_MODEL_TEST(constants, topology) {
 
 V5_MODEL_TEST(extractInputs, lays_out_next_piece_held_and_stats) {
     sim::Board2 board{};
-    StatsV4 const stats = played_stats(board);
+    auto const stats = played_stats(board);
 
     std::array<sim::PieceType, 2> const lookahead{sim::PieceType::T, sim::PieceType::S};
     std::array<ai::data_t, ModelV5::INPUTS> out{};
@@ -75,7 +75,7 @@ V5_MODEL_TEST(batchForward, derives_count_from_buffer_size) {
     auto const one = make_v5_buffer();
 
     std::array<ai::data_t, ModelV5::INPUTS * 3> buffer{};
-    for(size_t i = 0; i < 3; ++i)
+    for(auto i = 0uz; i < 3; ++i)
         std::ranges::copy(one, buffer.begin() + i * ModelV5::INPUTS);
 
     auto const out = model.batchForward(buffer);

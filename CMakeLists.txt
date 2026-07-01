@@ -31,12 +31,3 @@ if(TA3_ENABLE_TESTS)
 	enable_testing()
 endif()
 
-# formatting
-cth_glob_cpp(
-  FORMAT_FILES
-  "ta3_ai"
-  "ta3_sim"
-  "ta3_trainer"
-)
-
-#cth_add_uncrustify_target(uncrustify-format OPTIONAL ${FORMAT_FILES})

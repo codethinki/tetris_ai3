@@ -26,18 +26,13 @@ namespace {
             board.place(PieceType::O, Orientation::TOP, vec2{7, row - 1}); // cols 8,9, two rows
     }
 
-    // hard-drops a piece from @ref spawn and locks it where it lands
-    constexpr void hard_drop(Board2& board, PieceType type, Orientation orientation, vec2 spawn) {
-        board.place(type, orientation, board.dropPlace(type, orientation, spawn));
-    }
-
     // builds a stack in cols 3,4 with an I bridged over it, leaving a ceiling at row 16 on cols 5,6
     // and empty space (a well) beneath it
     constexpr void build_overhang(Board2& board) {
-        hard_drop(board, PieceType::O, Orientation::TOP, vec2{2, 0});
-        hard_drop(board, PieceType::O, Orientation::TOP, vec2{2, 0});
-        hard_drop(board, PieceType::O, Orientation::TOP, vec2{2, 0});
-        hard_drop(board, PieceType::I, Orientation::TOP, vec2{3, 0});
+        board.dropLocation(PieceType::O, Orientation::TOP, vec2{2, 0});
+        board.dropLocation(PieceType::O, Orientation::TOP, vec2{2, 0});
+        board.dropLocation(PieceType::O, Orientation::TOP, vec2{2, 0});
+        board.dropLocation(PieceType::I, Orientation::TOP, vec2{3, 0});
     }
 
     constexpr bool drops_and_clears_at_compile_time() {
@@ -46,7 +41,7 @@ namespace {
         if(board.fullLines() != 1) return false;
         if(board.clearLines() != 1) return false;
         if(board.fullLines() != 0) return false;
-        return board.dropPlace(PieceType::O, Orientation::TOP, vec2{7, 0}).y == 20;
+        return board.dropLocation(PieceType::O, Orientation::TOP, vec2{7, 0}).y == 20;
     }
     static_assert(drops_and_clears_at_compile_time());
 
@@ -100,33 +95,33 @@ BOARD2_TEST(available, rejects_below_the_floor) {
     EXPECT_FALSE(board.available(PieceType::O, Orientation::TOP, vec2{3, 22})); // row 23 is off-board
 }
 
-BOARD2_TEST(dropPlace, drops_to_floor_on_empty_board) {
+BOARD2_TEST(dropLocation, drops_to_floor_on_empty_board) {
     Board2 const board{};
 
-    auto const landing = board.dropPlace(PieceType::O, Orientation::TOP, vec2{3, 0});
+    auto const landing = board.dropLocation(PieceType::O, Orientation::TOP, vec2{3, 0});
 
     EXPECT_EQ(landing.x, 3);
     EXPECT_EQ(landing.y, 21);
 }
 
-BOARD2_TEST(dropPlace, vertical_i_drops_to_floor) {
+BOARD2_TEST(dropLocation, vertical_i_drops_to_floor) {
     Board2 const board{};
 
-    auto const landing = board.dropPlace(PieceType::I, Orientation::RIGHT, vec2{0, 0});
+    auto const landing = board.dropLocation(PieceType::I, Orientation::RIGHT, vec2{0, 0});
 
     EXPECT_EQ(landing.y, 19); // four tall, bottom block on row 22
 }
 
-BOARD2_TEST(dropPlace, lands_on_existing_stack) {
+BOARD2_TEST(dropLocation, lands_on_existing_stack) {
     Board2 board{};
     board.place(PieceType::O, Orientation::TOP, vec2{3, 21});
 
-    auto const landing = board.dropPlace(PieceType::O, Orientation::TOP, vec2{3, 0});
+    auto const landing = board.dropLocation(PieceType::O, Orientation::TOP, vec2{3, 0});
 
     EXPECT_EQ(landing.y, 19);
 }
 
-BOARD2_TEST(dropPlace, falls_past_overhang_into_well) {
+BOARD2_TEST(dropLocation, falls_past_overhang_into_well) {
     Board2 board{};
     build_overhang(board); // ceiling at row 16 over cols 5,6, empty beneath
     EXPECT_EQ(board.holes(), 12); // cols 5,6 each trap rows 17..22
@@ -134,11 +129,11 @@ BOARD2_TEST(dropPlace, falls_past_overhang_into_well) {
     vec2 const tucked{4, 17}; // O on cols 5,6, started under the ceiling
     ASSERT_TRUE(board.available(PieceType::O, Orientation::TOP, tucked));
 
-    auto const landing = board.dropPlace(PieceType::O, Orientation::TOP, tucked);
+    auto const landing = board.dropLocation(PieceType::O, Orientation::TOP, tucked);
     EXPECT_EQ(landing.y, 21); // ignores the ceiling, falls to the floor
 }
 
-BOARD2_TEST(dropPlace, every_piece_lands_and_stacks) {
+BOARD2_TEST(dropLocation, every_piece_lands_and_stacks) {
     for(uint32_t t = 0; t < *PieceType::COUNT; ++t) {
         for(uint32_t o = 0; o < *Orientation::SIZE; ++o) {
             auto const type = static_cast<PieceType>(t);
@@ -148,44 +143,44 @@ BOARD2_TEST(dropPlace, every_piece_lands_and_stacks) {
             Board2 board{};
             ASSERT_TRUE(board.available(type, orientation, spawn));
 
-            auto const first = board.dropPlace(type, orientation, spawn);
+            auto const first = board.dropLocation(type, orientation, spawn);
             EXPECT_TRUE(board.available(type, orientation, first));
             board.place(type, orientation, first);
             EXPECT_FALSE(board.available(type, orientation, first));
 
-            auto const second = board.dropPlace(type, orientation, spawn);
+            auto const second = board.dropLocation(type, orientation, spawn);
             EXPECT_LT(second.y, first.y); // identical piece stacks strictly higher
         }
     }
 }
 
-BOARD2_TEST(optDropPlace, matches_dropPlace_for_legal_offset) {
+BOARD2_TEST(optDropLocation, matches_dropLocation_for_legal_offset) {
     Board2 const board{};
 
-    auto const landing = board.optDropPlace(PieceType::O, Orientation::TOP, vec2{3, 0});
+    auto const landing = board.optDropLocation(PieceType::O, Orientation::TOP, vec2{3, 0});
 
     ASSERT_TRUE(landing.has_value());
-    EXPECT_EQ(landing->x, board.dropPlace(PieceType::O, Orientation::TOP, vec2{3, 0}).x);
-    EXPECT_EQ(landing->y, board.dropPlace(PieceType::O, Orientation::TOP, vec2{3, 0}).y);
+    EXPECT_EQ(landing->x, board.dropLocation(PieceType::O, Orientation::TOP, vec2{3, 0}).x);
+    EXPECT_EQ(landing->y, board.dropLocation(PieceType::O, Orientation::TOP, vec2{3, 0}).y);
 }
 
-BOARD2_TEST(optDropPlace, returns_nullopt_for_out_of_bounds) {
+BOARD2_TEST(optDropLocation, returns_nullopt_for_out_of_bounds) {
     Board2 const board{};
 
-    EXPECT_FALSE(board.optDropPlace(PieceType::O, Orientation::TOP, vec2{3, 22}).has_value());
-    EXPECT_FALSE(board.optDropPlace(PieceType::O, Orientation::TOP, vec2{8, 0}).has_value());
+    EXPECT_FALSE(board.optDropLocation(PieceType::O, Orientation::TOP, vec2{3, 22}).has_value());
+    EXPECT_FALSE(board.optDropLocation(PieceType::O, Orientation::TOP, vec2{8, 0}).has_value());
 }
 
-BOARD2_TEST(optDropPlace, returns_nullopt_when_start_overlaps) {
+BOARD2_TEST(optDropLocation, returns_nullopt_when_start_overlaps) {
     Board2 board{};
     board.place(PieceType::O, Orientation::TOP, vec2{3, 21});
 
-    EXPECT_FALSE(board.optDropPlace(PieceType::O, Orientation::TOP, vec2{3, 21}).has_value());
+    EXPECT_FALSE(board.optDropLocation(PieceType::O, Orientation::TOP, vec2{3, 21}).has_value());
 }
 
 BOARD2_TEST(place, occupies_the_landed_cells) {
     Board2 board{};
-    auto const landing = board.dropPlace(PieceType::O, Orientation::TOP, vec2{3, 0});
+    auto const landing = board.dropLocation(PieceType::O, Orientation::TOP, vec2{3, 0});
     board.place(PieceType::O, Orientation::TOP, landing);
 
     EXPECT_FALSE(board.available(PieceType::O, Orientation::TOP, landing));
@@ -244,7 +239,7 @@ BOARD2_TEST(clearLines, clears_four_rows) {
 BOARD2_TEST(clearLines, drops_survivors_after_multi_clear) {
     Board2 board{};
     fill_rows(board, 2); // rows 21,22 full
-    hard_drop(board, PieceType::O, Orientation::TOP, vec2{0, 0}); // O on cols 1,2 at rows 19,20
+    board.dropPlace(PieceType::O, Orientation::TOP, vec2{0, 0}); // O on cols 1,2 at rows 19,20
 
     ASSERT_EQ(board.clearLines(), 2u);
     EXPECT_EQ(board.fullLines(), 0u);
@@ -258,7 +253,7 @@ BOARD2_TEST(clearLines, drops_overhang_onto_cleared_row) {
     ASSERT_EQ(board.clearLines(), 1u);
 
     // the row-21 overhang on cols 8,9 falls onto row 22, so an O dropped there lands one row higher
-    auto const landing = board.dropPlace(PieceType::O, Orientation::TOP, vec2{7, 0});
+    auto const landing = board.dropLocation(PieceType::O, Orientation::TOP, vec2{7, 0});
     EXPECT_EQ(landing.y, 20);
 }
 

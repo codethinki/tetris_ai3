@@ -1,20 +1,44 @@
-#include "ta3/ai/model.hpp"
+#include "ta3/ai/models/v4/model_v4.hpp"
 
 #include "helpers.hpp"
 #include "models/v4/test.hpp"
 #include "test.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <span>
+
 namespace ta3::ai {
 
 namespace {
 
-constexpr size_t EXPECTED_WEIGHT_COUNT = 2365;
+    constexpr size_t EXPECTED_WEIGHT_COUNT = 2365;
 
-sim::Board stacked_board() {
-    sim::Board board = test::empty_board();
-    test::fill_row(board, 22);
-    return board;
-}
+    // a board with one O placed and its stats projected, so the feature vector is non-trivial
+    TetrisStatsV4 played_stats(sim::Board2& board) {
+        auto const landing = board.dropLocation(sim::PieceType::O, sim::Orientation::TOP, sim::vec2{0, 0});
+        board.place(sim::PieceType::O, sim::Orientation::TOP, landing);
+
+        TetrisStatsV4 stats{};
+        stats.advance(board.fullLines(), board, sim::PieceType::O, sim::PieceType::COUNT);
+        return stats;
+    }
+
+    std::array<ai::data_t, ModelV4::INPUTS> make_v4_buffer() {
+        sim::Board2 board{};
+        auto const stats = played_stats(board);
+        std::array<sim::PieceType, sim::PIECE_QUEUE_SIZE - 1> const lookahead{
+            sim::PieceType::T,
+            sim::PieceType::S,
+            sim::PieceType::Z,
+            sim::PieceType::J
+        };
+
+        std::array<ai::data_t, ModelV4::INPUTS> buffer{};
+        ModelV4::extractInputs(parse_inputs_t{stats, board, lookahead}, buffer);
+        return buffer;
+    }
 
 } // namespace
 
@@ -24,9 +48,28 @@ V4_MODEL_TEST(constants, topology) {
     EXPECT_EQ(ModelV4{}.size(), EXPECTED_WEIGHT_COUNT);
 }
 
-V4_MODEL_TEST(default_construct, exposes_weight_count) {
+V4_MODEL_TEST(extractInputs, board_grid_then_metadata) {
+    sim::Board2 board{};
+    auto const stats = played_stats(board);
+
+    std::array<sim::PieceType, 1> const lookahead{sim::PieceType::T};
+    std::array<ai::data_t, ModelV4::INPUTS> out{};
+    ModelV4::extractInputs(parse_inputs_t{stats, board, lookahead}, out);
+
+    // the placed O sets some occupancy cells in the board section
+    EXPECT_TRUE(std::ranges::any_of(std::span{out}.first(V4_BOARD_SIZE), [](ai::data_t v) { return v != 0.f; }));
+    // holes is the second metadata scalar, right after the board section
+    EXPECT_EQ(out[V4_BOARD_SIZE + 1], static_cast<ai::data_t>(stats.holes()));
+}
+
+V4_MODEL_TEST(forward, returns_single_finite_score) {
     ModelV4 const model;
-    EXPECT_EQ(model.size(), EXPECTED_WEIGHT_COUNT);
+    auto const buffer = make_v4_buffer();
+
+    auto const result = model.forward(std::span<ai::data_t const, ModelV4::INPUTS>{buffer});
+
+    EXPECT_EQ(result.size(), ModelV4::OUTPUTS);
+    EXPECT_TRUE(std::isfinite(result[0]));
 }
 
 V4_MODEL_TEST(load, accepts_full_weight_vector) {
@@ -34,79 +77,28 @@ V4_MODEL_TEST(load, accepts_full_weight_vector) {
     EXPECT_NO_THROW(ModelV4{weights});
 }
 
-V4_MODEL_TEST(forward, returns_single_score) {
+V4_MODEL_TEST(batchForward, derives_count_from_buffer_size) {
     ModelV4 const model;
-    sim::Board const board = test::empty_board();
-    auto const input = test::make_input(board, board);
+    auto const one = make_v4_buffer();
 
-    auto const result = model.forward(input);
+    std::array<ai::data_t, ModelV4::INPUTS * 3> buffer{};
+    for(auto i = 0uz; i < 3; ++i)
+        std::ranges::copy(one, buffer.begin() + i * ModelV4::INPUTS);
 
-    EXPECT_EQ(result.size(), ModelV4::OUTPUTS);
-    EXPECT_TRUE(std::isfinite(result[0]));
-}
+    auto const out = model.batchForward(buffer);
 
-V4_MODEL_TEST(batchForward, empty_input_returns_empty_output) {
-    ModelV4 const model;
-    std::vector<input_data_v4> const inputs{};
-
-    auto const out = model.batchForward(std::span<input_data_v4 const>{inputs});
-
-    EXPECT_TRUE(out.empty());
-}
-
-V4_MODEL_TEST(batchForward, output_size_matches_batch) {
-    ModelV4 const model;
-    sim::Board const board = test::empty_board();
-    auto const input = test::make_input(board, board);
-
-    std::array<input_data_v4, 3> const inputs{input, input, input};
-    auto const out = model.batchForward(std::span<input_data_v4 const>{inputs});
-
-    EXPECT_EQ(out.size(), inputs.size() * ModelV4::OUTPUTS);
+    EXPECT_EQ(out.size(), 3u * ModelV4::OUTPUTS);
 }
 
 V4_MODEL_TEST(batchForward, matches_single_forward) {
     ModelV4 const model;
-    sim::Board const board = test::empty_board();
-    auto const input = test::make_input(board, board);
+    auto const buffer = make_v4_buffer();
 
-    auto const single = model.forward(input);
-    std::array<input_data_v4, 1> const inputs{input};
-    auto const batch = model.batchForward(std::span<input_data_v4 const>{inputs});
+    auto const single = model.forward(std::span<ai::data_t const, ModelV4::INPUTS>{buffer});
+    auto const batch = model.batchForward(buffer);
 
     ASSERT_EQ(batch.size(), single.size());
     EXPECT_NEAR(batch[0], single[0], 1e-4f);
-}
-
-V4_MODEL_TEST(batchForward, distinct_inputs_produce_finite_scores) {
-    ModelV4 const model;
-    sim::Board const empty = test::empty_board();
-    sim::Board const stacked = stacked_board();
-
-    auto const emptyInput = test::make_input(empty, empty);
-    auto const stackedInput = test::make_input(stacked, stacked);
-
-    std::array<input_data_v4, 2> const inputs{emptyInput, stackedInput};
-    auto const out = model.batchForward(std::span<input_data_v4 const>{inputs});
-
-    ASSERT_EQ(out.size(), 2u);
-    EXPECT_TRUE(std::isfinite(out[0]));
-    EXPECT_TRUE(std::isfinite(out[1]));
-}
-
-V4_MODEL_TEST(reload, new_weight_vector_still_runs) {
-    auto weightsA = test::zero_weights(EXPECTED_WEIGHT_COUNT);
-    auto weightsB = test::zero_weights(EXPECTED_WEIGHT_COUNT);
-    weightsB[0] = 0.5;
-
-    ModelV4 const modelA{weightsA};
-    ModelV4 const modelB{weightsB};
-
-    sim::Board const board = test::empty_board();
-    auto const input = test::make_input(board, board);
-
-    EXPECT_NO_THROW(modelA.forward(input));
-    EXPECT_NO_THROW(modelB.forward(input));
 }
 
 }

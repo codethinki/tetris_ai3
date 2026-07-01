@@ -2,19 +2,25 @@
 
 #include "ta3/ai/model_utils.hpp"
 
-
+#include <algorithm>
 
 namespace ta3::ai {
 
-ModelV4::ModelV4(std::span<double const> weights) : ModelV4{} {
+ModelV4::ModelV4(std::span<double const> weights) : ModelV4{} { loadWeights(weights); }
+
+void ModelV4::loadWeights(std::span<double const> weights) {
     auto const used = dev::load(weights, *_stage1, *_stage2);
     CTH_CRITICAL(used != weights.size(), "weights / init size mismatch") {}
 }
-auto ModelV4::forward(input_data_t const& input_data) const -> std::array<ai::data_t, OUTPUTS> {
-    return this->forward(input_data.board_matrix(), input_data.metadata_vector());
+
+auto ModelV4::forward(std::span<ai::data_t const, V4_INPUTS> input) const -> std::array<ai::data_t, STAGE2_OUT_SIZE> {
+    v4_board_matrix const board = dlib::mat(input.data(), V4_BOARD_HEIGHT, V4_BOARD_WIDTH);
+    v4_metadata const metadata{input.data() + V4_BOARD_SIZE, V4_METADATA_SIZE};
+    return forward(board, metadata);
 }
-auto ModelV4::forward(board_matrix_t input, metadata_t metadata) const -> std::array<ai::data_t, OUTPUTS> {
-    std::span<board_matrix_t, 1> rng{&input, 1};
+
+auto ModelV4::forward(v4_board_matrix input, v4_metadata metadata) const -> std::array<ai::data_t, OUTPUTS> {
+    std::span<v4_board_matrix, 1> rng{&input, 1};
     auto const& stage1Out = _stage1->operator()(rng.begin(), rng.end());
 
     CTH_CRITICAL(
@@ -44,21 +50,6 @@ auto ModelV4::forward(board_matrix_t input, metadata_t metadata) const -> std::a
     return result;
 }
 
-std::vector<ai::data_t> ModelV4::batchForward(std::span<input_data_t const> inputs) const {
-    std::vector<board_matrix_t> inputMatrices{};
-    std::vector<metadata_t> metadata{};
-
-    inputMatrices.reserve(inputs.size());
-    metadata.reserve(inputs.size());
-
-    for(auto const& input : inputs) {
-        inputMatrices.emplace_back(input.board_matrix());
-        metadata.emplace_back(input.metadata_vector());
-    }
-
-    return batchForward(inputMatrices, metadata);
-}
-
 std::vector<ai::data_t> ModelV4::batchForward(std::span<ai::data_t const> inputs) const {
     CTH_CRITICAL(inputs.size() % INPUTS != 0, "input buffer [{}] is not a multiple of INPUTS [{}]", inputs.size(), INPUTS) {}
 
@@ -66,34 +57,32 @@ std::vector<ai::data_t> ModelV4::batchForward(std::span<ai::data_t const> inputs
     if(count == 0)
         return {};
 
-    std::vector<board_matrix_t> boards{};
-    std::vector<metadata_t> metadata{};
+    std::vector<v4_board_matrix> boards{};
+    std::vector<v4_metadata> metadata{};
     boards.reserve(count);
     metadata.reserve(count);
 
     for(size_t i = 0; i < count; ++i) {
         auto const slice = inputs.subspan(i * INPUTS, INPUTS);
-        boards.emplace_back(dlib::mat(slice.data(), input_data_v4::HEIGHT, input_data_v4::WIDTH));
-        metadata.emplace_back(metadata_t{slice.data() + input_data_v4::BOARD_SIZE, input_data_v4::METADATA_SIZE});
+        boards.emplace_back(dlib::mat(slice.data(), V4_BOARD_HEIGHT, V4_BOARD_WIDTH));
+        metadata.emplace_back(v4_metadata{slice.data() + V4_BOARD_SIZE, V4_METADATA_SIZE});
     }
 
     return batchForward(boards, metadata);
 }
 
 std::vector<ai::data_t> ModelV4::batchForward(
-    std::span<board_matrix_t const> boards,
-    std::span<metadata_t const> metadata
+    std::span<v4_board_matrix const> boards,
+    std::span<v4_metadata const> metadata
 ) const {
     CTH_CRITICAL(
         boards.size() != metadata.size(),
-        "boards [{}], metadata_vector [{}] size mismatch",
+        "boards [{}], metadata [{}] size mismatch",
         boards.size(),
         metadata.size()
     ) {}
-    CTH_WARN(boards.empty() && metadata.empty(), "batch forwarding 0 inputs") {}
 
     auto const inputs = boards.size();
-
     if(inputs == 0)
         return {};
 
@@ -133,10 +122,12 @@ std::vector<ai::data_t> ModelV4::batchForward(
 
     return out;
 }
+
 void ModelV4::init() const {
     ai::dev::init<STAGE1_IN_DIM>(*_stage1);
     ai::dev::init_flat<STAGE2_IN_SIZE>(*_stage2);
 }
+
 size_t ModelV4::size() const { return dev::size(*_stage1) + dev::size(*_stage2); }
 
 }

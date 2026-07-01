@@ -185,7 +185,7 @@ constexpr void TetrisGame::hold() {
 }
 
 constexpr vec2 TetrisGame::landingOffset() const {
-    return _engine.board().dropPlace(_engine.currentPiece(), _orientation, _offset);
+    return _engine.board().dropLocation(_engine.currentPiece(), _orientation, _offset);
 }
 
 }

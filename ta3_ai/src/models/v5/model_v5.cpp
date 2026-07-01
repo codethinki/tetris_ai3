@@ -6,7 +6,9 @@
 
 namespace ta3::ai {
 
-ModelV5::ModelV5(std::span<double const> weights) : ModelV5{} {
+ModelV5::ModelV5(std::span<double const> weights) : ModelV5{} { loadWeights(weights); }
+
+void ModelV5::loadWeights(std::span<double const> weights) {
     auto const used = dev::load(weights, *_net);
     CTH_CRITICAL(used != weights.size(), "weights / init size mismatch") {}
 }

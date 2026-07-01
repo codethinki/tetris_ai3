@@ -8,77 +8,87 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <utility>
 
 namespace ta3::sim {
 
 /**
- * @brief tetris advanced one hard-drop placement at a time -- the logical core, no move or gravity
- *  layer. the current piece is committed straight to its landing; a playable @c Tetris wraps this.
- * @note the piece supply is a seeded 7-bag, so one seed reproduces the whole game
+ * tetris, one hard-drop placement at a time -- logical core, no move or gravity layer
+ * @details
+ * - current piece committed straight to its landing; playable @c Tetris wraps this
+ * - seeded 7-bag supply, one seed reproduces the whole game
  */
 class TetrisEngine {
 public:
-    /** @brief starts a game whose entire piece sequence is determined by @ref seed */
+    /** new game, sequence from @ref seed */
     constexpr explicit TetrisEngine(uint64_t seed);
 
-    /** @brief restarts the game with a fresh piece sequence from @ref seed */
+    /** restart, fresh sequence from @ref seed */
     constexpr void reset(uint64_t seed);
 
+    /** clear-count sentinel for a game-ending move */
+    static constexpr size_t DIED = std::numeric_limits<size_t>::max();
+
+    /** absent piece / empty hold sentinel */
+    static constexpr auto NO_PIECE = PieceType::COUNT;
+
     /**
-     * @brief hard-drops the current piece in @ref orientation at window x-origin @ref x, clears full
-     *  rows, and advances to the next piece
-     * @param x x-origin of the piece's 4x4 window (== Board2 offset.x), naturally in [-2, WIDTH+2]
-     * @pre the placement is legal: the piece fits at the spawn and drops without collision
-     * @post @ref gameOver may become true if the next piece cannot spawn
-     * @return the number of rows cleared by this placement
+     * hard-drop current piece, clear rows, advance
+     * @param orientation drop orientation
+     * @param x window x-origin (== Board2 offset.x), ~[-2, WIDTH + 2]
+     * @pre legal placement (fits at spawn, drops without collision)
+     * @return rows cleared, or @ref DIED on a game-ending move
      */
     constexpr size_t place(Orientation orientation, int x);
 
-    /** @brief swaps the current piece with the hold slot, taking the next piece when it is empty */
+    /** swap current piece with hold slot, taking the next piece when empty */
     constexpr void hold();
 
-    /** @brief whether the current piece can no longer spawn (top-out) */
+    /** current piece can no longer spawn (top-out) */
     [[nodiscard]] constexpr bool gameOver() const { return _gameOver; }
 
     [[nodiscard]] constexpr Board2 const& board() const { return _board; }
 
-    /** @brief the piece to be placed next */
+    /** piece to place next */
     [[nodiscard]] constexpr PieceType currentPiece() const { return _queue.front(); }
 
-    /** @brief the held piece, or @c PieceType::COUNT when the hold slot is empty */
+    /** held piece, or @ref NO_PIECE if empty */
     [[nodiscard]] constexpr PieceType heldPiece() const { return _held; }
 
-    /** @brief the upcoming pieces after the current one, soonest first */
+    /** whether a piece is held */
+    [[nodiscard]] constexpr bool holdsPiece() const { return _held != NO_PIECE; }
+
+    /** upcoming pieces after the current, soonest first */
     [[nodiscard]] constexpr std::span<PieceType const> lookahead() const {
         return std::span<PieceType const>{_queue}.subspan(1);
     }
 
 private:
-    /** spawn position: top orientation, 4x4 window centered horizontally */
+    /** spawn: top orientation, 4x4 window centered horizontally */
     static constexpr vec2 SPAWN{static_cast<int>((WIDTH - PIECE_WIDTH) / 2), 0};
 
-    /** @brief next piece from the 7-bag, reshuffling a fresh bag when the current one is exhausted */
+    /** next piece from the 7-bag, reshuffling when exhausted */
     [[nodiscard]] constexpr PieceType drawPiece();
 
-    /** @brief drops the current piece out of the queue and refills the lookahead from the bag */
+    /** drop current piece, refill lookahead from the bag */
     constexpr void advanceQueue();
 
-    /** @brief sets @ref _gameOver when the current piece cannot spawn */
+    /** set @ref _gameOver if current piece cannot spawn */
     constexpr void updateGameOver();
 
     Board2 _board{};
 
-    /** visible queue: @c [0] is the current piece, the rest are lookahead */
+    /** visible queue: @c [0] current, rest lookahead */
     std::array<PieceType, PIECE_QUEUE_SIZE> _queue{};
 
-    /** held piece, or @c PieceType::COUNT for an empty hold slot */
-    PieceType _held = PieceType::COUNT;
+    /** held piece, or @ref NO_PIECE if empty */
+    PieceType _held = NO_PIECE;
     bool _gameOver = false;
 
-    /** 7-bag draw order and the read position into it */
-    std::array<PieceType, *PieceType::COUNT> _bag{};
+    /** 7-bag draw order */
+    std::array<PieceType, *NO_PIECE> _bag{};
     size_t _bagPos = 0;
 
     Xoshiro256ss _rng;
@@ -92,7 +102,7 @@ constexpr TetrisEngine::TetrisEngine(uint64_t seed) { reset(seed); }
 
 constexpr void TetrisEngine::reset(uint64_t seed) {
     _board = Board2{};
-    _held = PieceType::COUNT;
+    _held = NO_PIECE;
     _gameOver = false;
     _bagPos = 0;
     _rng.seed(seed);
@@ -126,17 +136,17 @@ constexpr void TetrisEngine::advanceQueue() {
 
 constexpr size_t TetrisEngine::place(Orientation orientation, int x) {
     PieceType const type = currentPiece();
-    vec2 const landing = _board.dropPlace(type, orientation, vec2{x, 0});
+    vec2 const landing = _board.dropLocation(type, orientation, vec2{x, 0});
     _board.place(type, orientation, landing);
 
     size_t const cleared = _board.clearLines();
     advanceQueue();
     updateGameOver();
-    return cleared;
+    return _gameOver ? DIED : cleared;
 }
 
 constexpr void TetrisEngine::hold() {
-    if(_held == PieceType::COUNT) {
+    if(_held == NO_PIECE) {
         _held = _queue.front();
         advanceQueue();
     }

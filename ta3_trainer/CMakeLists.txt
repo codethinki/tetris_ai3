@@ -17,6 +17,7 @@ find_package(cth CONFIG REQUIRED)
 find_package(pagmo CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS serialization)
 find_package(Eigen3 CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
 
 target_link_libraries(
         ta3_trainer
@@ -25,6 +26,9 @@ target_link_libraries(
         Pagmo::pagmo
         Boost::serialization
         Eigen3::Eigen
+        zstd::libzstd
+        cth::coro
+        cth::cth
 )
 
 if(MSVC)

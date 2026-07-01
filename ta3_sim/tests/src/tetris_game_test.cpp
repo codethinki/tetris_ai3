@@ -296,7 +296,7 @@ GAME_TEST(landingOffset, equals_the_board_drop_landing) {
     TetrisGame game{11};
 
     vec2 const ghost = game.landingOffset();
-    vec2 const drop = game.board().dropPlace(game.currentPiece(), game.orientation(), game.offset());
+    vec2 const drop = game.board().dropLocation(game.currentPiece(), game.orientation(), game.offset());
 
     EXPECT_EQ(ghost.x, drop.x);
     EXPECT_EQ(ghost.y, drop.y);

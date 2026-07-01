@@ -12,6 +12,7 @@
     "libjpeg-turbo",
     "libpng",
     "pagmo2",
-    "raylib"
+    "raylib",
+    "zstd"
   ]
 }
