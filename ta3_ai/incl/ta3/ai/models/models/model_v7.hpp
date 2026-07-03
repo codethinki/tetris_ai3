@@ -21,9 +21,9 @@ constexpr size_t V7_FC1_SIZE = 16, V7_FC2_SIZE = 8, V7_OUT_SIZE = 1;
 /** @brief a minimal stats-only value model -- three fc layers over the v7 feature vector */
 class ModelV7 {
     enum feature : size_t {
-        HOLES,
         SURFACE_VARIANCE,
-        COLUMN_TRANSITIONS,
+        HOLES,
+        HOLE_DEPTHS,
         ERODE_PIECE_CELLS,
         AGG_HEIGHT,
         FEATURE_COUNT,
@@ -48,9 +48,9 @@ public:
         score_v4,
         metric::agg_height,
         //score
-        metric::avg_max_height,
         metric::total_clears,
-        metric::avg_holes
+        metric::avg_max_height,
+        metric::avg_hole_depths
     >;
 
     /**
@@ -58,9 +58,9 @@ public:
      * @param[out] out exactly @ref INPUTS values to overwrite
      */
     static constexpr void extractInputs(tetris_stats_t const& stats, std::span<data_t> out) {
-        out[HOLES] = stats.get(metric::norm_holes);
         out[SURFACE_VARIANCE] = stats.get(metric::norm_surface_var);
-        out[COLUMN_TRANSITIONS] = stats.get(metric::norm_y_transitions);
+        out[HOLES] = stats.get(metric::norm_holes);
+        out[HOLE_DEPTHS] = stats.get(metric::norm_hole_depths);
         out[ERODE_PIECE_CELLS] = stats.get(metric::norm_eroded_score);
         out[AGG_HEIGHT] = stats.get(metric::norm_agg_height);
     }

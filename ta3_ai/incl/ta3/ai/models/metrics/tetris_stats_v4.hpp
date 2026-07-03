@@ -12,7 +12,7 @@ using stats_v4 = metric::stats<
     //score
     metric::total_clears,
     metric::avg_max_height,
-    metric::avg_holes
+    metric::avg_hole_depths
 >;
 
 
