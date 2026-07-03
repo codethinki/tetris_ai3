@@ -1,7 +1,5 @@
 #pragma once
-#include "ta3/ai/models/v4/model_v4.hpp"
-
-#include "ta3/ai/models/v4/input_data_v4.hpp"
+#include "models/models/model_v7.hpp"
 
 #include <array>
 #include <concepts>
@@ -26,14 +24,14 @@ concept model =
     && requires(
     T const m,
     T mut,
-    parse_inputs_t const& parsed,
+    typename T::tetris_stats_t const& stats,
     std::span<data_t> out,
     std::span<data_t const, T::INPUTS> input,
     std::span<data_t const> buffer,
     std::span<double const> weights
 ) {
         // encode one candidate into a buffer slice
-        { T::extractInputs(parsed, out) };
+        { T::extractInputs(stats, out) };
 
         // reuse one instance across evaluations
         { mut.loadWeights(weights) };
@@ -44,7 +42,7 @@ concept model =
     };
 
 
-using model_t = ModelV4;
+using model_t = ModelV7;
 static_assert(model<model_t>, "the selected model version must satisfy the model concept");
 
 namespace m {
@@ -54,7 +52,4 @@ namespace m {
 }
 
 using tetris_stats_t = model_t::tetris_stats_t;
-
-// legacy holder, kept only for the v1 MultiTetris / trainer path; the model no longer parses through it
-using input_t = input_data_v4;
 }

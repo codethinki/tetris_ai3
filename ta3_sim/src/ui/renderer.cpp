@@ -2,10 +2,9 @@
 
 #include "raylib.h"
 
-#include "ta3/sim/tetris.hpp"
-
 
 #include <mutex>
+#include <random>
 #include <thread>
 
 Color to_color(ta3::sim::BlockType type) {
@@ -32,24 +31,30 @@ Renderer::Renderer() : _boardCache{BOARD_SIZE * DISPLAYS}, _boards{_boardCache.d
 
     _renderThread = std::jthread{[this](std::stop_token const& stop) { renderLoopInternal(stop); }};
 }
-void Renderer::hook(Tetris const& tetris) {
+void Renderer::hook(TetrisEngine const& tetris) {
     std::lock_guard _{_displaySlotLock};
 
     auto const ptr = &tetris;
 
-    if(_waitingQueue.contains(ptr) || std::ranges::contains(_displays, ptr)) return;
+    if(_waitingQueue.contains(ptr) || std::ranges::contains(_displays, ptr))
+        return;
 
     _waitingQueue.insert(ptr);
 
     ++_registrations;
 }
-void Renderer::unhook(Tetris const& tetris) {
+
+void Renderer::unhook(TetrisEngine const& tetris) {
     std::lock_guard _{_displaySlotLock};
 
     auto const ptr = &tetris;
-    if(_waitingQueue.contains(ptr)) { _waitingQueue.erase(ptr); } else if(std::ranges::contains(_displays, ptr))
-        std::ranges::replace(_displays, ptr,
-            nullptr);
+    if(_waitingQueue.contains(ptr)) { _waitingQueue.erase(ptr); }
+    else if(std::ranges::contains(_displays, ptr))
+        std::ranges::replace(
+            _displays,
+            ptr,
+            nullptr
+        );
 
     ++_finishedGames;
 }
@@ -81,7 +86,8 @@ void Renderer::setSizes() {
 
     _separator = _screenExtents / SEPARATOR_DIV;
 
-    auto const height = static_cast<int>((_screenExtents.y - _border.y * 2.f - (GAME_GRID_EXTENT.y - 1.f) * _separator.y) /
+    auto const height = static_cast<int>((_screenExtents.y - _border.y * 2.f - (GAME_GRID_EXTENT.y - 1.f) * _separator.
+            y) /
         (GAME_GRID_EXTENT.y * static_cast<float>(HEIGHT)));
     auto const width = static_cast<int>((_screenExtents.x - _border.x * 2.f - (GAME_GRID_EXTENT.x - 1.f) * _separator.x)
         / (GAME_GRID_EXTENT.x * static_cast<float>(WIDTH)));
@@ -89,12 +95,10 @@ void Renderer::setSizes() {
 
     _cellSizePx = std::min(height, width);
     _boardExtents = vec2{WIDTH, HEIGHT} * (_cellSizePx + LINE_WIDTH) + LINE_WIDTH;
-
 }
 
 
 void Renderer::draw(size_t index, vec2 origin) const {
-
     DrawRectangle(origin.x, origin.y, _boardExtents.x, _boardExtents.y, ColorAlpha(WHITE, 0.1f));
 
 
@@ -125,7 +129,6 @@ void Renderer::draw(size_t index, vec2 origin) const {
         int const xPos = origin.x + x * (_cellSizePx + LINE_WIDTH);
         DrawLine(xPos + LINE_WIDTH, origin.y, xPos + LINE_WIDTH, origin.y + _boardExtents.y, DARKGRAY);
     }
-
 }
 
 void Renderer::refreshBoards() {
@@ -136,11 +139,13 @@ void Renderer::refreshBoards() {
     auto unassigned = std::views::filter(_displays, [](auto& ptr) { return ptr == nullptr; });
 
     for(auto& ptr : unassigned) {
-        if(_waitingQueue.empty()) return;
+        if(_waitingQueue.empty())
+            return;
 
         std::uniform_int_distribution<size_t> dist{0, _waitingQueue.size() - 1};
 
-        if(ptr != nullptr) return;
+        if(ptr != nullptr)
+            return;
 
         auto it = _waitingQueue.begin();
 
@@ -155,27 +160,31 @@ void Renderer::copyBoards() {
     std::lock_guard lock{_displaySlotLock};
     for(size_t i = 0; i < DISPLAYS; ++i) {
         auto const tetris = _displays[i];
-        if(tetris == nullptr) continue;
+        if(tetris == nullptr)
+            continue;
 
-        auto boardView = tetris->board().flat();
-        std::ranges::copy(boardView, _boardCache.begin() + static_cast<ptrdiff_t>(i * BOARD_SIZE));
+        size_t offset = i * BOARD_SIZE;
+        for(size_t y = 0; y < HEIGHT; y++)
+            for(size_t x = 0; x < WIDTH; x++)
+                _boardCache[offset + y * WIDTH + x] = tetris->board().available({x, y})
+                                                      ? BlockType::EMPTY
+                                                      : BlockType::I;
     }
 }
 
 void Renderer::drawBoards() const {
-
-
     ClearBackground(BLACK);
 
     for(int i = 0; i < DISPLAYS; ++i) {
         vec2 const pos{i % GAME_GRID_EXTENT.x, i / GAME_GRID_EXTENT.x};
 
-        vec2 const origin{pos.x * (_boardExtents.x + _separator.x) + _border.x, pos.y * (_boardExtents.y + _separator.y) + _border.y};
+        vec2 const origin{
+            pos.x * (_boardExtents.x + _separator.x) + _border.x,
+            pos.y * (_boardExtents.y + _separator.y) + _border.y
+        };
 
         draw(i, origin);
     }
-
-
 }
 void Renderer::drawStats(std::chrono::system_clock::time_point start) const {
     static constexpr int FONT_SIZE = 20;
@@ -185,10 +194,16 @@ void Renderer::drawStats(std::chrono::system_clock::time_point start) const {
 
     auto const elapsedTime = std::chrono::duration<float>(now - start).count();
 
-    auto const registrationsStr = std::format("registrations: {}, {}/s",
-        _registrations.load(), _registrations == 0 ? 0.f : static_cast<float>(_registrations) / elapsedTime);
-    auto const finishedGamesStr = std::format("finished Games {}, {}/s",
-        _finishedGames.load(), _finishedGames == 0 ? 0.f : static_cast<float>(_finishedGames) / elapsedTime);
+    auto const registrationsStr = std::format(
+        "registrations: {}, {}/s",
+        _registrations.load(),
+        _registrations == 0 ? 0.f : static_cast<float>(_registrations) / elapsedTime
+    );
+    auto const finishedGamesStr = std::format(
+        "finished Games {}, {}/s",
+        _finishedGames.load(),
+        _finishedGames == 0 ? 0.f : static_cast<float>(_finishedGames) / elapsedTime
+    );
 
     DrawText(registrationsStr.c_str(), offset.x, offset.y, FONT_SIZE, LIME);
     DrawText(finishedGamesStr.c_str(), offset.x, offset.y - 20, FONT_SIZE, LIME);
@@ -211,7 +226,8 @@ void Renderer::renderLoopInternal(std::stop_token const& stop) {
             _screenExtents.x = GetScreenWidth();
             _screenExtents.y = GetScreenHeight();
             setSizes();
-        } else if(!_fullscreen && IsKeyPressed(KEY_F11) || _fullscreen && IsKeyPressed(KEY_ESCAPE))
+        }
+        else if(!_fullscreen && IsKeyPressed(KEY_F11) || _fullscreen && IsKeyPressed(KEY_ESCAPE))
             toggleFullscreen();
 
         refreshBoards();

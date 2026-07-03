@@ -1,5 +1,5 @@
 #pragma once
-#include "ta3/ai/models/v4/tetris_stats_v4.hpp"
+#include "../metrics/tetris_stats_v4.hpp"
 
 #include "ta3/ai/model_defs.hpp"
 
@@ -22,7 +22,7 @@ constexpr size_t V4_BOARD_HEIGHT = std::min(ta3::sim::HEIGHT, 20uz);
 constexpr size_t V4_BOARD_WIDTH = ta3::sim::WIDTH;
 constexpr size_t V4_BOARD_SIZE = V4_BOARD_WIDTH * V4_BOARD_HEIGHT;
 
-// metadata: lines cleared, holes, new holes, roughness, then the piece queue (lookahead + held)
+// metadata: lines cleared, holes, new holes, surfaceVar, then the piece queue (lookahead + held)
 constexpr size_t V4_METADATA_SIZE = 4 + ta3::sim::PIECE_QUEUE_SIZE;
 constexpr size_t V4_INPUTS = V4_BOARD_SIZE + V4_METADATA_SIZE;
 
@@ -76,34 +76,36 @@ class ModelV4 {
 public:
     static constexpr size_t INPUTS = V4_INPUTS;
     static constexpr size_t OUTPUTS = STAGE2_OUT_SIZE;
-    static constexpr glm::dvec2 BOUNDS = {-1, 1};
+    static constexpr glm::dvec2 BOUNDS = {-2, 2};
     static constexpr size_t inputs() { return INPUTS; }
     static constexpr size_t outputs() { return OUTPUTS; }
     static constexpr glm::dvec2 bounds() { return BOUNDS; }
-    using tetris_stats_t = TetrisStatsV4;
+    using tetris_stats_t = stats_v4;
 
     /**
      * @brief encodes one candidate: the board occupancy grid followed by the scalar metadata
      * @param[out] out exactly @ref inputs() values to overwrite
      */
-    static constexpr void extractInputs(parse_inputs_t const& in, std::span<data_t> out) {
+    static constexpr void extractInputs(tetris_stats_t const& stats, std::span<data_t> out) {
         // crop the hidden buffer rows above the visible field off the top
-        constexpr auto TOP_CROP = ta3::sim::HEIGHT - V4_BOARD_HEIGHT;
+        constexpr auto topCrop = ta3::sim::HEIGHT - V4_BOARD_HEIGHT;
+        auto const* board = stats.get(metric::board);
         for(auto x = 0uz; x < V4_BOARD_WIDTH; ++x) {
-            auto const column = in.board.raw_column(x);
+            auto const column = board->raw_column(x);
             for(auto y = 0uz; y < V4_BOARD_HEIGHT; ++y)
-                out[y * V4_BOARD_WIDTH + x] = static_cast<data_t>((column >> (y + TOP_CROP)) & 1u);
+                out[y * V4_BOARD_WIDTH + x] = static_cast<data_t>((column >> (y + topCrop)) & 1u);
         }
 
         auto const metadata = out.subspan(V4_BOARD_SIZE);
-        metadata[LINES_CLEARED] = static_cast<data_t>(in.stats.linesCleared());
-        metadata[HOLES] = static_cast<data_t>(in.stats.holes());
-        metadata[NEW_HOLES] = static_cast<data_t>(in.stats.newHoles());
-        metadata[ROUGHNESS] = static_cast<data_t>(in.stats.roughness());
+        metadata[LINES_CLEARED] = static_cast<data_t>(stats.get(metric::lines_cleared));
+        metadata[HOLES] = static_cast<data_t>(stats.get(metric::holes));
+        metadata[NEW_HOLES] = static_cast<data_t>(stats.get(metric::new_holes));
+        metadata[ROUGHNESS] = static_cast<data_t>(stats.get(metric::surface_variance));
 
-        for(auto i = 0uz; i < in.lookahead.size(); ++i)
-            metadata[PIECES + i] = static_cast<data_t>(*in.lookahead[i]);
-        metadata[PIECES + in.lookahead.size()] = static_cast<data_t>(*in.stats.heldPiece());
+        auto const queue = stats.get(metric::piece_queue);
+        for(auto i = 0uz; i < queue.size(); ++i)
+            metadata[PIECES + i] = static_cast<data_t>(*queue[i]);
+        metadata[PIECES + queue.size()] = static_cast<data_t>(*stats.get(metric::held_piece));
     }
 
     ModelV4() : _stage1{std::make_unique<stage1_out>()}, _stage2{std::make_unique<stage2_out>()} { init(); }

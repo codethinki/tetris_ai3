@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ta3/sim/tetris_engine.hpp"
 #include "ta3/sim/tetris_defs.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 
@@ -41,9 +42,9 @@ public:
         _renderThread.join();
     }
 
-    void hook(Tetris const& tetris);
+    void hook(TetrisEngine const& tetris);
 
-    void unhook(Tetris const& tetris);
+    void unhook(TetrisEngine const& tetris);
 
     void resetStats();
 
@@ -63,13 +64,13 @@ private:
 
 
 
-    std::array<Tetris const*, DISPLAYS> _displays;
+    std::array<TetrisEngine const*, DISPLAYS> _displays;
     std::vector<BlockType> _boardCache;
     boards_view_t _boards;
     std::atomic<size_t> _registrations = 0;
     std::atomic<size_t> _finishedGames = 0;
 
-    std::set<Tetris const*> _waitingQueue;
+    std::set<TetrisEngine const*> _waitingQueue;
 
     std::mutex _displaySlotLock;
     std::jthread _renderThread;

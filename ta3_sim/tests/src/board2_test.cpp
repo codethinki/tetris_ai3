@@ -60,7 +60,6 @@ BOARD2_TEST(empty, starts_cleared) {
 
     EXPECT_EQ(board.holes(), 0);
     EXPECT_EQ(board.fullLines(), 0u);
-    EXPECT_DOUBLE_EQ(board.roughness(), 0.0);
 }
 
 BOARD2_TEST(available, accepts_free_placement_on_empty_board) {
@@ -244,7 +243,6 @@ BOARD2_TEST(clearLines, drops_survivors_after_multi_clear) {
     ASSERT_EQ(board.clearLines(), 2u);
     EXPECT_EQ(board.fullLines(), 0u);
     EXPECT_EQ(board.holes(), 0); // survivor fell onto the floor, no gap below
-    EXPECT_GT(board.roughness(), 0.0);
 }
 
 BOARD2_TEST(clearLines, drops_overhang_onto_cleared_row) {
@@ -270,19 +268,6 @@ BOARD2_TEST(holes, empty_board_has_none) {
     EXPECT_EQ(board.holes(), 0);
 }
 
-BOARD2_TEST(roughness, empty_board_is_zero) {
-    Board2 const board{};
-
-    EXPECT_DOUBLE_EQ(board.roughness(), 0.0);
-}
-
-BOARD2_TEST(roughness, uneven_surface_is_positive) {
-    Board2 board{};
-    board.place(PieceType::O, Orientation::TOP, vec2{0, 21});
-    board.place(PieceType::O, Orientation::TOP, vec2{4, 19});
-
-    EXPECT_GT(board.roughness(), 0.0);
-}
 
 BOARD2_TEST(equality, distinguishes_boards_by_occupancy) {
     Board2 a{};

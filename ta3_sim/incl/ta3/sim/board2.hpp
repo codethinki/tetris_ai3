@@ -34,6 +34,7 @@ public:
      */
     [[nodiscard]] constexpr bool available(PieceType, Orientation, vec2 offset) const;
 
+    [[nodiscard]] constexpr bool available(vec2 coord) const;
     /**
      * resolves the drop location
      * @pre @ref offset is legal (passes @ref available), so the piece always lands
@@ -69,8 +70,6 @@ public:
     /** counts the empty cells trapped below the surface across all columns */
     [[nodiscard]] constexpr size_t holes() const;
 
-    /** root of the squared height differences between adjacent columns */
-    [[nodiscard]] constexpr double roughness() const;
 
     /** number of fully occupied rows */
     [[nodiscard]] constexpr size_t fullLines() const { return static_cast<size_t>(std::popcount(fullRowsMask())); }
@@ -218,6 +217,10 @@ constexpr bool Board2::available(PieceType type, Orientation orientation, vec2 o
     }
     return true;
 }
+constexpr bool Board2::available(vec2 coord) const {
+    column_t const shifted = column_t{1} << coord.y;
+    return (_cols[coord.x] & shifted) != 0;
+}
 
 constexpr int Board2::dropDistance(piece_columns2_t const& piece, vec2 offset) const {
     int col = offset.x + piece.left;
@@ -288,15 +291,6 @@ constexpr size_t Board2::holes() const {
     for(size_t x = 0; x < WIDTH; ++x)
         sum += holes(x);
     return sum;
-}
-
-constexpr double Board2::roughness() const {
-    int sum = 0;
-    for(int x = 1; x < static_cast<int>(WIDTH); ++x) {
-        int const diff = top(x) - top(x - 1);
-        sum += diff * diff;
-    }
-    return cth::num::heron_sqrt<double>(sum);
 }
 
 }

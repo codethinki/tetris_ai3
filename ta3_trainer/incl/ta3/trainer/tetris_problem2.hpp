@@ -26,25 +26,25 @@ using pvecd = pagmo::vector_double;
 /** one model per model scheduler thread, leased on first use */
 using model_pool_t = cth::dt::thread_pool<ai::model_t>;
 
-
+struct TetrisProblem2Config {
+    cth::co::executor gameScheduler;
+    cth::co::executor modelScheduler;
+    std::shared_ptr<model_pool_t> modelPool;
+    size_t simulationsPerEval;
+    size_t maxMoves;
+    uint64_t const* seed;
+};
 
 class TetrisProblem2 {
-    static constexpr size_t GAME_BATCH_SIZE = 1'000'000;
-    static constexpr size_t SIMULATIONS_PER_EVAL = 200;
-    static constexpr size_t MAX_PIECES = 1000;
-
 public:
+    using Config = TetrisProblem2Config;
     // pagmo's is_udp requires default constructibility; the null state is never evaluated
     constexpr TetrisProblem2() = default;
 
-    constexpr TetrisProblem2(
-        cth::co::executor game_scheduler,
-        cth::co::executor model_scheduler,
-        std::shared_ptr<model_pool_t> model_pool,
-        uint64_t seed
-    );
+    constexpr TetrisProblem2(Config);
 
-    ~TetrisProblem2() = default;
+    constexpr ~TetrisProblem2() = default;
+
 
     [[nodiscard]] bounds_vec2 get_bounds() const;
 
@@ -65,10 +65,10 @@ private:
     /** mean score across the finished and the still alive games */
     [[nodiscard]] static double meanScore(ai::AiMultiTetris const& games);
 
-    std::optional<cth::co::executor> _gameScheduler;
-    std::optional<cth::co::executor> _modelScheduler;
-    std::shared_ptr<model_pool_t> _modelPool;
-    uint64_t _seed{};
+    std::optional<Config> _config;
+
+    [[nodiscard]] cth::co::executor gameScheduler() const { return _config->gameScheduler; }
+    [[nodiscard]] cth::co::executor modelScheduler() const { return _config->modelScheduler; }
 
 public:
     [[nodiscard]] pagmo::thread_safety get_thread_safety() const { return pagmo::thread_safety::constant; };
@@ -84,13 +84,5 @@ public:
 }
 
 namespace ta3::trn {
-constexpr TetrisProblem2::TetrisProblem2(
-    cth::co::executor game_scheduler,
-    cth::co::executor model_scheduler,
-    std::shared_ptr<model_pool_t> model_pool,
-    uint64_t seed
-) : _gameScheduler{game_scheduler},
-    _modelScheduler{model_scheduler},
-    _modelPool{std::move(model_pool)},
-    _seed{seed} {}
+constexpr TetrisProblem2::TetrisProblem2(Config config) : _config{std::move(config)} {}
 }

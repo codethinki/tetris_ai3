@@ -1,5 +1,5 @@
 #pragma once
-#include "ta3/ai/models/v4/tetris_stats_v4.hpp"
+#include "../metrics/tetris_stats_v4.hpp"
 
 #include "ta3/ai/model_defs.hpp"
 
@@ -47,26 +47,29 @@ public:
     static constexpr size_t INPUTS = V5_INPUTS;
     static constexpr size_t OUTPUTS = V5_OUT_SIZE;
     static constexpr glm::dvec2 BOUNDS{-2, 2};
+    static constexpr size_t inputs() { return INPUTS; }
+    static constexpr size_t outputs() { return OUTPUTS; }
+    static constexpr glm::dvec2 bounds() { return BOUNDS; }
 
-    using tetris_stats_t = TetrisStatsV4;
     using input_matrix_t = v5_input_matrix;
+    using tetris_stats_t = stats_v4;
 
 
     /**
      * @brief encodes one candidate: the next piece, the held piece, then the board stats
      * @param[out] out exactly @ref INPUTS values to overwrite
      */
-    static constexpr void extractInputs(parse_inputs_t const& in, std::span<data_t> out) {
-        out[NEXT_PIECE] = static_cast<data_t>(in.lookahead.empty() ? *sim::PieceType::COUNT : *in.lookahead.front());
-        out[HELD] = static_cast<data_t>(*in.stats.heldPiece());
-        out[HOLES] = static_cast<data_t>(in.stats.holes());
-        out[NEW_HOLES] = static_cast<data_t>(in.stats.newHoles());
-        out[ROUGHNESS] = static_cast<data_t>(in.stats.roughness());
-        out[LINES_CLEARED] = static_cast<data_t>(in.stats.linesCleared());
-        out[AGG_HEIGHT] = static_cast<data_t>(in.stats.aggregateHeight());
-        out[MAX_HEIGHT] = static_cast<data_t>(in.stats.maxHeight());
-        out[BUMPINESS] = static_cast<data_t>(in.stats.bumpiness());
-        out[PIECES] = static_cast<data_t>(in.stats.pieces());
+    static constexpr void extractInputs(tetris_stats_t const& stats, std::span<data_t> out) {
+        out[NEXT_PIECE] = static_cast<data_t>(*stats.get(metric::next_piece));
+        out[HELD] = static_cast<data_t>(*stats.get(metric::held_piece));
+        out[HOLES] = static_cast<data_t>(stats.get(metric::holes));
+        out[NEW_HOLES] = static_cast<data_t>(stats.get(metric::new_holes));
+        out[ROUGHNESS] = static_cast<data_t>(stats.get(metric::surface_variance));
+        out[LINES_CLEARED] = static_cast<data_t>(stats.get(metric::lines_cleared));
+        out[AGG_HEIGHT] = static_cast<data_t>(stats.get(metric::agg_height));
+        out[MAX_HEIGHT] = static_cast<data_t>(stats.get(metric::max_height));
+        out[BUMPINESS] = static_cast<data_t>(stats.get(metric::bumpiness));
+        out[PIECES] = static_cast<data_t>(stats.get(metric::pieces_placed));
     }
 
     ModelV5() : _net{std::make_unique<v5_out>()} { init(); }
@@ -87,5 +90,10 @@ private:
 
 public:
     [[nodiscard]] size_t size() const;
+
+    [[nodiscard]] static size_t params() {
+        static auto const COUNT = ModelV5{}.size();
+        return COUNT;
+    }
 };
 }

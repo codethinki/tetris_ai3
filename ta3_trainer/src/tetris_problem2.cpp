@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <span>
 #include <vector>
+#include <print>
 
 namespace ta3::trn {
 
@@ -18,7 +19,7 @@ bounds_vec2 TetrisProblem2::get_bounds() const {
 }
 
 pvecd TetrisProblem2::fitness(pvecd const& dv) const {
-    return {cth::co::sync(_gameScheduler->spawn(evalGames(dv)))};
+    return {cth::co::sync(_config->gameScheduler.spawn(evalGames(dv)))};
 }
 
 pvecd TetrisProblem2::batch_fitness(pvecd const& dvs) const {
@@ -42,16 +43,16 @@ pvecd TetrisProblem2::batch_fitness(pvecd const& dvs) const {
 }
 
 auto TetrisProblem2::evalGames(std::span<double const> dv) const -> cth::co::executor_task<double> {
-    ai::AiMultiTetris games{SIMULATIONS_PER_EVAL, _seed};
+    ai::AiMultiTetris games{_config->simulationsPerEval, *_config->seed};
 
-    for(auto pieces = 0uz; !games.empty() && pieces < MAX_PIECES; ++pieces) {
-        co_await _modelScheduler->schedule();
+    for(auto moves = 0uz; !games.empty() && moves < _config->maxMoves; ++moves) {
+        co_await modelScheduler().schedule();
 
-        auto& model = _modelPool->acquire();
+        auto& model = _config->modelPool->acquire();
         model.loadWeights(dv);
         auto const scores = model.batchForward(games.inputs());
 
-        co_await _gameScheduler->schedule();
+        co_await gameScheduler().schedule();
         games.next(scores);
     }
 
@@ -59,7 +60,7 @@ auto TetrisProblem2::evalGames(std::span<double const> dv) const -> cth::co::exe
 }
 
 auto TetrisProblem2::spawnEval(std::span<double const> dv) const -> cth::co::sync_task<double> {
-    co_return co_await _gameScheduler->spawn(evalGames(dv));
+    co_return co_await gameScheduler().spawn(evalGames(dv));
 }
 
 double TetrisProblem2::meanScore(ai::AiMultiTetris const& games) {
@@ -67,8 +68,13 @@ double TetrisProblem2::meanScore(ai::AiMultiTetris const& games) {
     auto const alive = games.gamesStats();
     auto const count = static_cast<double>(dead.size() + alive.size());
 
-    auto const score = [count](double sum, ai::tetris_stats_t const& stats) { return sum + stats.score() / count; };
+    auto const score = [count](double sum, ai::tetris_stats_t const& stats) {
+        return sum + stats.score() / count;
+    };
 
-    return std::ranges::fold_left(alive, std::ranges::fold_left(dead, 0., score), score);
+    auto aliveScore = std::ranges::fold_left(alive, 0., score);
+    auto deadScore = std::ranges::fold_left(dead, 0., score);
+
+    return aliveScore + deadScore;
 }
 }

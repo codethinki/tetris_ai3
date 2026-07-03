@@ -4,25 +4,20 @@
 #include "ta3/trainer/backup.hpp"
 #include "ta3/trainer/tetris_problem2.hpp"
 
+#include <zstd.h>
+#include <boost/archive/binary_iarchive.hpp>
+#include <boost/archive/binary_oarchive.hpp>
+#include <cth/macro.hpp>
 #include <pagmo/bfe.hpp>
-#include <pagmo/population.hpp>
 #include <pagmo/algorithms/cmaes.hpp>
 #include <pagmo/batch_evaluators/member_bfe.hpp>
 #include <pagmo/topologies/ring.hpp>
-
-#include <dlib/dnn.h>
-
-#include <cth/macro.hpp>
-
-#include <boost/archive/binary_iarchive.hpp>
-#include <boost/archive/binary_oarchive.hpp>
-
-#include <zstd.h>
 
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <print>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -36,18 +31,20 @@ namespace {
 Trainer2::Trainer2(stdfs::path save_file, Config const& config) : _saveFile{std::move(save_file)},
     _config{config},
     _modelScheduler{_config.parallelModelInstances},
-    _gameScheduler{_config.parallelGameInstances} { init(); }
+    _gameScheduler{_config.parallelGameInstances},
+    _generator{_config.gameSeed} { init(); }
+Trainer2::~Trainer2() = default;
 
-void Trainer2::initDlib() { dlib::set_dnn_prefer_fastest_algorithms(); }
 
 void Trainer2::initState() {
     if(!loadState())
         newState();
+    buildPreview();
+
 }
 void Trainer2::init() {
     cth::log::msg<cth::except::INFO>("initializing...");
     startSchedulers();
-    initDlib();
 
     _modelPool = std::make_shared<model_pool_t>();
     for(auto i = 0uz; i < _config.parallelModelInstances; ++i)
@@ -62,7 +59,7 @@ void Trainer2::newState() {
     cth::log::msg<cth::except::INFO>("creating new training state");
 
     auto algo = pagmo::cmaes{
-        static_cast<unsigned>(_config.gensPerCycle),
+        static_cast<unsigned>(_config.gensPerIteration),
         -1,
         -1,
         -1,
@@ -73,28 +70,40 @@ void Trainer2::newState() {
         true,
         false
     };
-    algo.set_verbosity(1);
+    algo.set_verbosity(0);
     algo.set_bfe(pagmo::bfe{pagmo::member_bfe{}});
 
     buildArchipelago(pagmo::algorithm{std::move(algo)});
 }
 void Trainer2::buildArchipelago(pagmo::algorithm const& algo) {
-    auto const pop = std::make_unique<pagmo::population>(
+    _arch = std::make_unique<pagmo::archipelago>(
+        pagmo::topology{pagmo::ring{1}},
+        _config.islands,
+        // island args
+        algo,
         TetrisProblem2{
-            cth::co::executor{_gameScheduler},
-            cth::co::executor{_modelScheduler},
-            _modelPool,
-            _config.gameSeed
+            {
+                _gameScheduler,
+                _modelScheduler,
+                _modelPool,
+                _config.simulationsPerEval,
+                _config.maxMoves,
+                &_iterationSeed
+            }
         },
         pagmo::member_bfe{},
-        _config.populationSize,
-        _config.populationSeed
+        _config.populationSize
     );
 
-    _arch = std::make_unique<pagmo::archipelago>(pagmo::topology{pagmo::ring{1}}, _config.islands, algo, *pop);
 
     cth::log::msg("created archipelago with: {} islands with {} instances!", _config.islands, _config.populationSize);
 }
+void Trainer2::buildPreview() { _preview.emplace(_arch->size()); }
+void Trainer2::reloadPreviewGames() {
+    _preview->refresh({std::from_range, _arch->get_champions_x() | std::views::join});
+}
+
+
 bool Trainer2::loadState() {
     if(!std::filesystem::exists(_saveFile))
         return false;
@@ -164,45 +173,52 @@ void Trainer2::saveState() {
 
     {
         std::ofstream file{_saveFile, std::ios::trunc | std::ios::binary};
+        CTH_STABLE_THROW(!file.is_open(), "failed to open file") {}
         file.write(compressed.data(), static_cast<std::streamsize>(compressedSize));
     }
 
     // champion weights, stored separately as raw doubles for loading a model later
     auto championFile = _saveFile;
-    championFile.replace_extension("champion");
+    championFile.replace_extension("champ");
     {
         auto const& champion = championsX[bestIsland];
         auto const count = champion.size();
 
         std::ofstream file{championFile, std::ios::trunc | std::ios::binary};
+        CTH_STABLE_THROW(!file.is_open(), "failed to open file") {}
         file.write(reinterpret_cast<char const*>(&count), sizeof(count));
-        file.write(reinterpret_cast<char const*>(champion.data()), static_cast<std::streamsize>(count * sizeof(double)));
+        file.write(
+            reinterpret_cast<char const*>(champion.data()),
+            static_cast<std::streamsize>(count * sizeof(double))
+        );
     }
 
-    trainer::backup(_saveFile);
-
-    cth::log::msg("saved state (island {}, fitness {})\n", bestIsland, bestFitness);
+    cth::log::msg("saved state (island {}, fitness {})", bestIsland, bestFitness);
 }
-void Trainer2::logRunBegin() {
-    cth::log::msg<cth::except::INFO>("starting training iteration...");
-    cth::log::msg("calculating {} cycles!", _config.cycles);
-}
+void Trainer2::logRunBegin() { cth::log::msg<cth::except::INFO>("starting training, stop to end...\n"); }
 
 void Trainer2::logImprovement(double current, double best) {
-    size_t increase = best == 0 ? 0 : static_cast<float>((current - best) / current * 100);
-    cth::log::msg<cth::except::INFO>("champion fitness: {}, change: {}%\n", current, increase);
+    double increase = current == 0 ? 0 : static_cast<float>((current - best) / current * 100.);
+    std::string changeStr{};
+    if(increase > 1e-6)
+        changeStr = std::format(", change: {:.2f}%", increase);
+
+    cth::log::msg<cth::except::INFO>("iteration champion fitness: {}{}", current, changeStr);
 }
 
 void Trainer2::logTimeEstimate(std::chrono::steady_clock::time_point start, size_t iteration) const {
     auto const elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-    cth::log::msg(
-        "est. time left: {}s\n\n",
-        elapsed / (static_cast<float>(iteration) + 1.f) * static_cast<float>(_config.cycles) - elapsed
-    );
+    cth::log::msg("elapsed: {}s, avg/iteration: {}s", elapsed, elapsed / (static_cast<float>(iteration) + 1.f));
+    std::println("\n\n");
 }
-void Trainer2::logRunEnd(std::chrono::steady_clock::time_point start) const {
+void Trainer2::logRunEnd(std::chrono::steady_clock::time_point start, size_t iterations) const {
     auto const total = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-    cth::log::msg<cth::except::INFO>("training cycles finished, took {}s, average: {}s", total, total / _config.cycles);
+    cth::log::msg<cth::except::INFO>(
+        "training stopped after {} iterations, took {}s, average: {}s",
+        iterations,
+        total,
+        iterations == 0 ? 0.f : total / static_cast<float>(iterations)
+    );
 }
 
 double Trainer2::extractBestFitness() const {
@@ -214,6 +230,7 @@ double Trainer2::extractBestFitness() const {
             bestOverallFitness = i[0];
     return bestOverallFitness;
 }
+
 void Trainer2::startSchedulers() {
     _modelScheduler.start();
     _gameScheduler.start();
@@ -223,12 +240,16 @@ void Trainer2::stopSchedulers() {
     _gameScheduler.request_stop();
     _modelScheduler.await_stop();
     _gameScheduler.await_stop();
+
+    _modelPool->clear();
 }
-void Trainer2::runCycle(size_t i) const {
-    cth::log::msg<cth::except::INFO>("starting cycle {}, left: {}\n", i, _config.cycles - 1 - i);
+void Trainer2::nextGameSeed() const { _iterationSeed = _generator(); }
+void Trainer2::runIteration(size_t i) const {
+    cth::log::msg<cth::except::INFO>("starting iteration {}", i);
 
     auto const start = std::chrono::steady_clock::now();
 
+    nextGameSeed();
     _arch->evolve(1);
 
     try { _arch->wait_check(); }
@@ -237,30 +258,62 @@ void Trainer2::runCycle(size_t i) const {
 
     auto const end = std::chrono::steady_clock::now();
 
-    cth::log::msg("completed cycle {}, took {}s\n", i, std::chrono::duration<float>{end - start}.count());
+    cth::log::msg("completed iteration {}, took {}s", i, std::chrono::duration<float>{end - start}.count());
 }
-void Trainer2::run() {
-    logRunBegin();
+void Trainer2::runCycle(
+    std::stop_token const& stop,
+    size_t& iteration,
+    double& best_fitness
+) {
+    cth::log::msg<cth::except::INFO>("running cycle with {} iterations", _config.iterationsPerCycle);
 
-    auto const start = std::chrono::steady_clock::now();
-    double bestFitness = 0;
+    auto const cycleStart = cth::chrono::clock_t::now();
 
-    startSchedulers();
-    for(size_t i = 0; i < _config.cycles; i++) {
-        runCycle(i);
+    for(size_t it = 0; it < _config.iterationsPerCycle && !stop.stop_requested(); ++it, ++iteration) {
+        reloadPreviewGames();
 
-        auto currentBestFitness = -extractBestFitness();
-        logImprovement(currentBestFitness, bestFitness);
+        runIteration(iteration);
 
-        bestFitness = std::max(bestFitness, currentBestFitness);
-
+        auto const currentBestFitness = -extractBestFitness();
+        logImprovement(currentBestFitness, best_fitness);
+        best_fitness = std::max(best_fitness, currentBestFitness);
 
         saveState();
 
-        logTimeEstimate(start, i);
+        logTimeEstimate(cycleStart, iteration);
     }
+
+    CTH_STABLE_THROW(!stdfs::exists(_saveFile), "save file must exist for backup") {}
+
+    trainer::backup(_saveFile, _config.maxBackups);
+
+    auto championFile = _saveFile;
+    championFile.replace_extension("champ");
+    trainer::backup(championFile, _config.maxBackups);
+
+    auto const cycleEnd = cth::chrono::clock_t::now();
+    cth::log::msg<cth::except::INFO>("ended cycle in {}s", std::chrono::duration<float>{cycleEnd - cycleStart}.count());
+    std::println("\n\n");
+}
+bool Trainer2::running() const {
+    return _modelScheduler.active() || _gameScheduler.active() || _preview && _preview->running();
+}
+void Trainer2::run(std::stop_token const& stop) {
+    logRunBegin();
+
+    auto const start = std::chrono::steady_clock::now();
+
+    startSchedulers();
+    _preview->run();
+
+    size_t iteration = 0;
+    double bestFitness = 0;
+    while(!stop.stop_requested())
+        runCycle(stop, iteration, bestFitness);
+
+    _preview->stop();
     stopSchedulers();
 
-    logRunEnd(start);
+    logRunEnd(start, iteration);
 }
 }

@@ -1,4 +1,4 @@
-#include "ta3/ai/models/v5/model_v5.hpp"
+#include "ta3/ai/models/models/model_v5.hpp"
 
 #include "ta3/ai/model_utils.hpp"
 

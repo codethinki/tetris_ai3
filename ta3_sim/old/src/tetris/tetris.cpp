@@ -10,9 +10,8 @@ namespace ta3::sim {
 Tetris::Tetris() {
     newPiece();
 
-    if(renderer) renderer->hook(*this);
 }
-Tetris::~Tetris() { if(renderer) renderer->unhook(*this); }
+Tetris::~Tetris() { }
 
 
 void Tetris::update(Instruction const instruction) {

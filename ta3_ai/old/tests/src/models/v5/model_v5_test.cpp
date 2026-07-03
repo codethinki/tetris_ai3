@@ -52,7 +52,7 @@ V5_MODEL_TEST(extractInputs, lays_out_next_piece_held_and_stats) {
     EXPECT_EQ(out[0], static_cast<ai::data_t>(*sim::PieceType::T));     // next piece = lookahead front
     EXPECT_EQ(out[1], static_cast<ai::data_t>(*sim::PieceType::COUNT)); // empty hold slot
     EXPECT_EQ(out[2], static_cast<ai::data_t>(stats.holes()));
-    EXPECT_EQ(out[9], static_cast<ai::data_t>(stats.pieces()));
+    EXPECT_EQ(out[9], static_cast<ai::data_t>(stats.piecesPlaced()));
 }
 
 V5_MODEL_TEST(forward, returns_single_finite_score) {
