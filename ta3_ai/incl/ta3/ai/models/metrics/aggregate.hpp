@@ -29,11 +29,11 @@ public:
     template<class Metric>
     [[nodiscard]] constexpr auto get(Metric const& metric) const {
         if constexpr(requires(Metric m, input_t const& in) { m.advance(in); })
-            return std::get<Metric>(_metrics)(_in);   // stateful game metric
+            return std::get<Metric>(_metrics)(_in); // stateful game metric
         else if constexpr(requires(Metric m) { m(*this); })
-            return metric(*this);                      // score metric: reads the whole block
+            return metric(*this); // score metric: reads the whole block
         else
-            return metric(_in);                        // stateless move metric
+            return metric(_in); // stateless move metric
     }
 
 private:

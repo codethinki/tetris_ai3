@@ -1,5 +1,5 @@
 #pragma once
-#include "ta3/sim/glm_defs.hpp"
+#include "ta3/sim/ivec2.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 
 #include <cth/macro.hpp>

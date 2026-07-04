@@ -32,7 +32,7 @@ Trainer2::Trainer2(stdfs::path save_file, Config const& config) : _saveFile{std:
     _config{config},
     _modelScheduler{_config.parallelModelInstances},
     _gameScheduler{_config.parallelGameInstances},
-    _generator{_config.gameSeed} { init(); }
+    _generator{_config.trainingSeed} { init(); }
 Trainer2::~Trainer2() = default;
 
 
@@ -40,7 +40,6 @@ void Trainer2::initState() {
     if(!loadState())
         newState();
     buildPreview();
-
 }
 void Trainer2::init() {
     cth::log::msg<cth::except::INFO>("initializing...");
@@ -92,9 +91,14 @@ void Trainer2::buildArchipelago(pagmo::algorithm const& algo) {
             }
         },
         pagmo::member_bfe{},
-        _config.populationSize
+        _config.populationSize,
+        static_cast<unsigned>(_generator())
     );
-
+    for(auto& island : *_arch) {
+        auto a = island.get_algorithm();
+        a.extract<pagmo::cmaes>()->set_seed(_generator());
+        island.set_algorithm(a);
+    }
 
     cth::log::msg("created archipelago with: {} islands with {} instances!", _config.islands, _config.populationSize);
 }
@@ -197,8 +201,8 @@ void Trainer2::saveState() {
 }
 void Trainer2::logRunBegin() { cth::log::msg<cth::except::INFO>("starting training, stop to end...\n"); }
 
-void Trainer2::logImprovement(double current, double best) {
-    double increase = current == 0 ? 0 : static_cast<float>((current - best) / current * 100.);
+void Trainer2::logImprovement(double current, double previous) {
+    double increase = current == 0 ? 0 : static_cast<float>((current - previous) / current * 100.);
     std::string changeStr{};
     if(increase > 1e-6)
         changeStr = std::format(", change: {:.2f}%", increase);
@@ -249,7 +253,6 @@ void Trainer2::runIteration(size_t i) const {
 
     auto const start = std::chrono::steady_clock::now();
 
-    nextGameSeed();
     _arch->evolve(1);
 
     try { _arch->wait_check(); }
@@ -262,12 +265,13 @@ void Trainer2::runIteration(size_t i) const {
 }
 void Trainer2::runCycle(
     std::stop_token const& stop,
-    size_t& iteration,
-    double& best_fitness
+    size_t& iteration
 ) {
     cth::log::msg<cth::except::INFO>("running cycle with {} iterations", _config.iterationsPerCycle);
 
     auto const cycleStart = cth::chrono::clock_t::now();
+
+    double bestFitness = 0;
 
     for(size_t it = 0; it < _config.iterationsPerCycle && !stop.stop_requested(); ++it, ++iteration) {
         reloadPreviewGames();
@@ -275,8 +279,7 @@ void Trainer2::runCycle(
         runIteration(iteration);
 
         auto const currentBestFitness = -extractBestFitness();
-        logImprovement(currentBestFitness, best_fitness);
-        best_fitness = std::max(best_fitness, currentBestFitness);
+        logImprovement(currentBestFitness, std::exchange(bestFitness, currentBestFitness));
 
         saveState();
 
@@ -307,9 +310,10 @@ void Trainer2::run(std::stop_token const& stop) {
     _preview->run();
 
     size_t iteration = 0;
-    double bestFitness = 0;
-    while(!stop.stop_requested())
-        runCycle(stop, iteration, bestFitness);
+    while(!stop.stop_requested()){
+        nextGameSeed();
+        runCycle(stop, iteration);
+    }
 
     _preview->stop();
     stopSchedulers();

@@ -1,5 +1,5 @@
 #pragma once
-#include "ta3/sim/glm_defs.hpp"
+#include "ta3/sim/ivec2.hpp"
 
 #include <cth/enums.hpp>
 #include <cth/macro.hpp>

@@ -1,5 +1,5 @@
 #pragma once
-#include "ta3/sim/glm_defs.hpp"
+#include "ta3/sim/ivec2.hpp"
 #include "ta3/sim/tetris_defs.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 #include "ta3/sim/pieces/piece_offsets.hpp"
@@ -263,8 +263,6 @@ constexpr bool Board2::optDropPlace(PieceType type, Orientation o, vec2 offset) 
 
 
 constexpr void Board2::place(PieceType type, Orientation orientation, vec2 offset) {
-    CTH_CRITICAL(!available(type, orientation, offset), "place location must be available") {}
-
     auto const [left, cols] = piece_columns2(type, orientation);
     int col = offset.x + left;
     for(auto const mask : cols)

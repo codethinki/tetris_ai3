@@ -1,10 +1,12 @@
 #pragma once
+#include "ta3/sim/ivec2.hpp"
+
 #include <glm/glm.hpp>
 
 #include <cstddef>
 
 namespace ta3::sim {
-using vec2 = glm::vec<2, int>;
+// vec2 is now a device-clean POD (see ivec2.hpp); glm stays for the host-only float/size types
 using fvec3 = glm::vec<3, float>;
 using szvec2 = glm::vec<2, size_t>;
 

@@ -27,8 +27,7 @@ struct TrainerConfig2 {
     size_t iterationsPerCycle;
     size_t maxBackups;
 
-    uint64_t gameSeed = 0x1010101010101010;
-    unsigned populationSeed = std::random_device{}();
+    uint64_t trainingSeed = 0x3e28df7b1811145b;
 };
 
 class Trainer2 {
@@ -54,7 +53,7 @@ private:
     void reloadPreviewGames();
 
     void logRunBegin();
-    static void logImprovement(double current, double best);
+    static void logImprovement(double current, double previous);
     void logTimeEstimate(std::chrono::steady_clock::time_point start, size_t iteration) const;
     void logRunEnd(std::chrono::steady_clock::time_point start, size_t iterations) const;
 
@@ -69,8 +68,7 @@ private:
     /** backs up the state, then runs @ref TrainerConfig2::iterationsPerCycle iterations (which only save) */
     void runCycle(
         std::stop_token const& stop,
-        size_t& iteration,
-        double& best_fitness
+        size_t& iteration
     );
 
 
