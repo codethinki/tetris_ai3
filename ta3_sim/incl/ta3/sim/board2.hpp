@@ -1,15 +1,15 @@
 #pragma once
 #include "ta3/sim/ivec2.hpp"
-#include "ta3/sim/tetris_defs.hpp"
+#include "ta3/sim/utility/bits.hpp"
+#include "ta3/sim/utility/tetris_defs.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 #include "ta3/sim/pieces/piece_offsets.hpp"
 
-#include <cth/numeric.hpp>
 
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <cstddef>
+#include <compare>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -33,6 +33,46 @@ public:
      * @param offset place offset
      */
     [[nodiscard]] constexpr bool available(PieceType, Orientation, vec2 offset) const;
+
+    /**
+     * checks if @p s fits at row @p y (collision + bottom bound)
+     * @pre 0 <= y < HEIGHT and s spans board columns within [0, WIDTH) -- placements enumerated by
+     *  the search LUT satisfy this by construction; arbitrary callers use the (PieceType, ...) overload
+     */
+    [[nodiscard]] constexpr bool available(piece_shape s, int y) const;
+
+    /**
+     * rows @p s can fall from row @p y before resting
+     * @pre (s, y) passes @ref available
+     */
+    [[nodiscard]] constexpr int dropDistance(piece_shape s, int y) const;
+
+    /**
+     * locks @p s in at row @p y
+     * @pre (s, y) is a resting position within the field
+     */
+    constexpr void place(piece_shape s, int y);
+
+    /** result of @ref fit: legality at spawn and the drop distance, computed in one board walk */
+    struct fit_t {
+        int drop;
+        bool ok;
+    };
+
+    /**
+     * spawn-row (@c y=0) collision check and drop distance, fused into ONE pass over the columns --
+     * the hot search path calls this instead of separate @ref available + @ref dropDistance walks
+     * (fewer instructions and a smaller live window, which is what the register budget cares about).
+     * @return @c {drop, ok}; @c drop is meaningful only when @c ok
+     * @pre s spans board columns within [0, WIDTH) (by placement-LUT construction)
+     */
+    [[nodiscard]] constexpr fit_t fit(piece_shape s) const;
+
+    /**
+     * the board with @p s locked in at row @p y -- copy and placement fused into one pass.
+     * @pre (s, y) is a resting position within the field
+     */
+    [[nodiscard]] constexpr Board2 placed(piece_shape s, int y) const;
 
     [[nodiscard]] constexpr bool available(vec2 coord) const;
     /**
@@ -72,7 +112,7 @@ public:
 
 
     /** number of fully occupied rows */
-    [[nodiscard]] constexpr size_t fullLines() const { return static_cast<size_t>(std::popcount(fullRowsMask())); }
+    [[nodiscard]] constexpr size_t fullLines() const { return static_cast<size_t>(popcount(fullRowsMask())); }
 
     /**
      * the raw bit-column of board column.
@@ -91,7 +131,7 @@ public:
     /** mirror across the vertical axis (reverses the column order) */
     [[nodiscard]] constexpr Board2 vFlipped() const {
         Board2 flipped;
-        for(auto x = 0uz; x < WIDTH; ++x)
+        for(size_t x = 0; x < WIDTH; ++x)
             flipped._cols[x] = _cols[WIDTH - 1 - x];
         return flipped;
     }
@@ -102,8 +142,9 @@ public:
         return flipped < *this ? flipped : *this;
     }
 
-    friend constexpr bool operator==(Board2 const&, Board2 const&) = default;
-    friend constexpr auto operator<=>(Board2 const&, Board2 const&) = default;
+
+    constexpr bool operator==(Board2 const&) const = default;
+    constexpr auto operator<=>(Board2 const&) const = default;
 
 private:
     using column_t = uint32_t;
@@ -120,17 +161,17 @@ private:
      */
     [[nodiscard]] static constexpr bool offsetInBounds(int first, size_t width, int y);
 
-    /**
-     * @pre @ref offset is legal
-     * @post offset.y + return is legal
-     */
-    [[nodiscard]] constexpr int dropDistance(piece_columns2_t const& piece, vec2 offset) const;
+    /** the piece's bit-column at board column @p x, 0 outside the shape's span */
+    [[nodiscard]] static constexpr column_t column_of(piece_shape s, int x) {
+        auto const d = static_cast<uint32_t>(x - s.col0);
+        return d < PIECE_WIDTH ? (static_cast<column_t>(s.cols) >> (4 * d)) & 0xFu : 0u;
+    }
 
     /**
      * top-most occupied row of a column word
      * @details @ref column, or @ref HEIGHT when empty, bounded by [0, HEIGHT]
      */
-    [[nodiscard]] static constexpr int columnTop(column_t column) { return std::countr_zero(column | FLOOR); }
+    [[nodiscard]] static constexpr int columnTop(column_t column) { return ctz(column | FLOOR); }
 
     /**
      * y of the top-most occupied cell in column
@@ -181,7 +222,7 @@ constexpr Board2::column_t Board2::clearLine(column_t col, column_t row) {
 }
 
 constexpr Board2::column_t Board2::clearLines(column_t col, column_t full_lines) {
-    auto const fullLineC = std::popcount(full_lines);
+    auto const fullLineC = popcount(full_lines);
     [[assume(fullLineC <= static_cast<int>(BLOCKS))]];
 
     for(int i = 0; i < fullLineC; i++) {
@@ -197,49 +238,44 @@ constexpr bool Board2::offsetInBounds(int first, size_t width, int y) {
         && 0 <= y && y < static_cast<int>(HEIGHT);
 }
 
-constexpr bool Board2::available(PieceType type, Orientation orientation, vec2 offset) const {
-    auto const [left, cols] = piece_columns2(type, orientation);
-    int col = offset.x + left;
+constexpr bool Board2::available(piece_shape s, int y) const {
+    column_t hit = 0;
+    for(size_t x = 0; x < WIDTH; ++x) {
+        column_t const shifted = column_of(s, static_cast<int>(x)) << y;
 
-    if(!offsetInBounds(col, cols.size(), offset.y))
-        return false;
-
-    for(auto const mask : cols) {
-        column_t const shifted = mask << offset.y;
-
-        // check y out of bounds for piece blocks
-        if((shifted & ~FIELD) != 0)
-            return false;
-        // check collision
-        if((_cols[col] & shifted) != 0)
-            return false;
-        ++col;
+        hit |= shifted & ~FIELD; // piece blocks out the bottom
+        hit |= _cols[x] & shifted; // collision
     }
-    return true;
+    return hit == 0;
+}
+
+constexpr bool Board2::available(PieceType type, Orientation orientation, vec2 offset) const {
+    piece_shape const s = piece_shape_at(type, orientation, offset.x);
+    return offsetInBounds(s.col0, static_cast<size_t>(shape_width(s.cols)), offset.y)
+        && available(s, offset.y);
 }
 constexpr bool Board2::available(vec2 coord) const {
     column_t const shifted = column_t{1} << coord.y;
     return (_cols[coord.x] & shifted) != 0;
 }
 
-constexpr int Board2::dropDistance(piece_columns2_t const& piece, vec2 offset) const {
-    int col = offset.x + piece.left;
+constexpr int Board2::dropDistance(piece_shape s, int y) const {
     int minDrop = HEIGHT;
-    for(auto const column : piece.cols) {
-        int const low = offset.y + std::bit_width(column) - 1; // piece's lowest block in this column
+    for(size_t x = 0; x < WIDTH; ++x) {
+        column_t const nib = column_of(s, static_cast<int>(x));
+        int const low = y + bit_width32(nib) - 1; // piece's lowest block in this column
 
         auto const mask = ~((column_t{1} << (low + 1)) - 1);
         // ignore the stack at/above that block, then count down to the first cell below it
-        auto const below = _cols[col++] & mask;
+        auto const below = _cols[x] & mask;
         auto const drop = columnTop(below) - low - 1;
-        minDrop = std::min(minDrop, drop);
+        minDrop = nib != 0 ? std::min(minDrop, drop) : minDrop; // select, not branch
     }
     return minDrop;
 }
 
 constexpr vec2 Board2::dropLocation(PieceType type, Orientation orientation, vec2 offset) const {
-    auto const piece = piece_columns2(type, orientation);
-    return vec2{offset.x, offset.y + dropDistance(piece, offset)};
+    return vec2{offset.x, offset.y + dropDistance(piece_shape_at(type, orientation, offset.x), offset.y)};
 }
 
 constexpr std::optional<vec2> Board2::optDropLocation(PieceType type, Orientation orientation, vec2 offset) const {
@@ -262,11 +298,36 @@ constexpr bool Board2::optDropPlace(PieceType type, Orientation o, vec2 offset) 
 }
 
 
+constexpr void Board2::place(piece_shape s, int y) {
+    for(size_t x = 0; x < WIDTH; ++x)
+        _cols[x] |= column_of(s, static_cast<int>(x)) << y;
+}
+
+constexpr Board2::fit_t Board2::fit(piece_shape s) const {
+    column_t hit = 0;
+    int minDrop = HEIGHT;
+    for(size_t x = 0; x < WIDTH; ++x) {
+        column_t const nib = column_of(s, static_cast<int>(x));
+
+        hit |= _cols[x] & nib; // collision at spawn (y=0: a nibble never reaches below the field)
+
+        int const low = bit_width32(nib) - 1; // piece's lowest block in this column
+        auto const mask = ~((column_t{1} << (low + 1)) - 1);
+        int const drop = columnTop(_cols[x] & mask) - low - 1;
+        minDrop = nib != 0 ? std::min(minDrop, drop) : minDrop; // select, not branch
+    }
+    return {minDrop, hit == 0};
+}
+
+constexpr Board2 Board2::placed(piece_shape s, int y) const {
+    Board2 next;
+    for(size_t x = 0; x < WIDTH; ++x)
+        next._cols[x] = _cols[x] | (column_of(s, static_cast<int>(x)) << y);
+    return next;
+}
+
 constexpr void Board2::place(PieceType type, Orientation orientation, vec2 offset) {
-    auto const [left, cols] = piece_columns2(type, orientation);
-    int col = offset.x + left;
-    for(auto const mask : cols)
-        _cols[col++] |= mask << offset.y;
+    place(piece_shape_at(type, orientation, offset.x), offset.y);
 }
 
 constexpr size_t Board2::clearLines() {
@@ -277,11 +338,11 @@ constexpr size_t Board2::clearLines() {
     for(auto& col : _cols)
         col = clearLines(col, full);
 
-    return static_cast<size_t>(std::popcount(full));
+    return static_cast<size_t>(popcount(full));
 }
 
 constexpr size_t Board2::holes(size_t x) const {
-    return HEIGHT - static_cast<size_t>(top(x)) - static_cast<size_t>(std::popcount(_cols[x]));
+    return HEIGHT - static_cast<size_t>(top(x)) - static_cast<size_t>(popcount(_cols[x]));
 }
 
 constexpr size_t Board2::holes() const {

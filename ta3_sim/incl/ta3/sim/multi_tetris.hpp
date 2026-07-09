@@ -1,6 +1,7 @@
 #pragma once
+#include "ta3/sim/utility/placement.hpp"
 #include "ta3/sim/tetris_engine.hpp"
-#include "ta3/sim/utility.hpp"
+#include "ta3/sim/utility/xoshiro256ss.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 
 #include <cth/io/log.hpp>
@@ -17,13 +18,8 @@ namespace ta3::sim {
  */
 class MultiTetris {
 public:
-    struct placement_t {
-        Orientation orientation;
-        int x;
-
-        /** (@ref TetrisEngine::hold) */
-        bool hold = false;
-    };
+    /** @see sim::drop_place_t (lifted to its own header for device use; aliased here for the existing API) */
+    using drop_place_t = sim::drop_place_t;
 
     /**
       * @param count games
@@ -37,7 +33,7 @@ public:
      * @return lines cleared per game, @ref TetrisEngine::DIED if it died
      * @pre placement is legal
      */
-    constexpr std::vector<size_t> next(std::span<placement_t const> moves);
+    constexpr std::vector<size_t> next(std::span<drop_place_t const> moves);
 
     /**
      * @return true if all games ended
@@ -67,7 +63,7 @@ constexpr MultiTetris::MultiTetris(size_t count, uint64_t seed) {
         _games.emplace_back(seedGen());
 }
 
-constexpr std::vector<size_t> MultiTetris::next(std::span<placement_t const> moves) {
+constexpr std::vector<size_t> MultiTetris::next(std::span<drop_place_t const> moves) {
     CTH_CRITICAL(
         moves.size() != _games.size(),
         "expected one move per game ({} moves, {} games)",

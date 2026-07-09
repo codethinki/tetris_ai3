@@ -29,10 +29,10 @@ namespace {
     // builds a stack in cols 3,4 with an I bridged over it, leaving a ceiling at row 16 on cols 5,6
     // and empty space (a well) beneath it
     constexpr void build_overhang(Board2& board) {
-        board.dropLocation(PieceType::O, Orientation::TOP, vec2{2, 0});
-        board.dropLocation(PieceType::O, Orientation::TOP, vec2{2, 0});
-        board.dropLocation(PieceType::O, Orientation::TOP, vec2{2, 0});
-        board.dropLocation(PieceType::I, Orientation::TOP, vec2{3, 0});
+        board.dropPlace(PieceType::O, Orientation::TOP, vec2{2, 0});
+        board.dropPlace(PieceType::O, Orientation::TOP, vec2{2, 0});
+        board.dropPlace(PieceType::O, Orientation::TOP, vec2{2, 0});
+        board.dropPlace(PieceType::I, Orientation::TOP, vec2{3, 0});
     }
 
     constexpr bool drops_and_clears_at_compile_time() {

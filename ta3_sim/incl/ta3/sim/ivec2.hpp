@@ -1,5 +1,6 @@
 #pragma once
 #include <compare>
+#include <cstddef>
 
 namespace ta3::sim {
 
@@ -23,5 +24,19 @@ struct ivec2 {
 };
 
 using vec2 = ivec2;
+
+/**
+ * @brief plain 2D double vector -- device-clean replacement for glm::dvec2
+ * @note used for model weight bounds; supports @c operator[] for the pagmo bound builders
+ */
+struct dvec2 {
+    double x{};
+    double y{};
+
+    constexpr double operator[](size_t i) const { return i == 0 ? x : y; }
+    constexpr double& operator[](size_t i) { return i == 0 ? x : y; }
+
+    friend constexpr bool operator==(dvec2, dvec2) = default;
+};
 
 }
