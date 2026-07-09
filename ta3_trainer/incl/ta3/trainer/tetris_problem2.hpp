@@ -1,5 +1,8 @@
 #pragma once
-#include "ta3/ai/model.hpp"
+#include <ta3/ai/model.hpp>
+#include <ta3/gpu/model_eval.hpp>
+
+
 
 #include <pagmo/threading.hpp>
 #include <pagmo/types.hpp>
@@ -12,24 +15,20 @@
 
 #include <memory>
 #include <span>
+#include <vector>
 
-
-namespace ta3::ai {
-class AiMultiTetris;
-}
 
 namespace ta3::trn {
 
 using bounds_vec2 = std::pair<pagmo::vector_double, pagmo::vector_double>;
 using pvecd = pagmo::vector_double;
 
-/** one model per model scheduler thread, leased on first use */
-using model_pool_t = cth::dt::thread_pool<ai::model_t>;
+
+using eval_pool_t = cth::dt::thread_pool<gpu::ModelEvaluator>;
 
 struct TetrisProblem2Config {
-    cth::co::executor gameScheduler;
     cth::co::executor modelScheduler;
-    std::shared_ptr<model_pool_t> modelPool;
+    std::shared_ptr<eval_pool_t> evalPool;
     size_t simulationsPerEval;
     size_t maxMoves;
     uint64_t const* seed;
@@ -53,21 +52,19 @@ public:
     [[nodiscard]] pvecd batch_fitness(pvecd const& dvs) const;
 
 private:
-    using clock_t = std::chrono::steady_clock;
-    using time_p = std::chrono::time_point<clock_t>;
+    /** evaluates @ref numModels models (weights, model-major NUM_PARAMS each) over @c simulationsPerEval
+     *  shared games in a single kernel launch, returning one mean score per model.
+     *  takes @ref weights BY VALUE: as a coroutine it suspends before use, so the data must live in the
+     *  frame -- a span/reference to a caller temporary would dangle after the first suspension. */
+    [[nodiscard]] auto evalBatch(std::vector<gpu::weights_t> weights, std::size_t num_models) const
+        -> cth::co::executor_task<std::vector<double>>;
 
-    /** evaluates @ref dv over @ref SIMULATIONS_PER_EVAL games, scoring on the model scheduler */
-    [[nodiscard]] auto evalGames(std::span<double const> dv) const -> cth::co::executor_task<double>;
-
-    /** wraps @ref evalGames into a blockable task spawned on the game scheduler */
-    [[nodiscard]] auto spawnEval(std::span<double const> dv) const -> cth::co::sync_task<double>;
-
-    /** mean score across the finished and the still alive games */
-    [[nodiscard]] static double meanScore(ai::AiMultiTetris const& games);
+    /** wraps @ref evalBatch into a blockable task spawned on the model scheduler */
+    [[nodiscard]] auto spawnBatch(std::vector<gpu::weights_t> weights, std::size_t num_models) const
+        -> cth::co::sync_task<std::vector<double>>;
 
     std::optional<Config> _config;
 
-    [[nodiscard]] cth::co::executor gameScheduler() const { return _config->gameScheduler; }
     [[nodiscard]] cth::co::executor modelScheduler() const { return _config->modelScheduler; }
 
 public:

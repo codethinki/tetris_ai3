@@ -15,8 +15,13 @@
 #include <pagmo/batch_evaluators/member_bfe.hpp>
 #include <pagmo/topologies/ring.hpp>
 
+#include <algorithm>
+#include <array>
+#include <concepts>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <iterator>
 #include <limits>
 #include <print>
@@ -33,7 +38,6 @@ namespace {
 Trainer2::Trainer2(stdfs::path save_file, Config const& config) : _saveFile{std::move(save_file)},
     _config{config},
     _modelScheduler{_config.parallelModelInstances},
-    _gameScheduler{_config.parallelGameInstances},
     _generator{_config.trainingSeed} { init(); }
 Trainer2::~Trainer2() = default;
 
@@ -43,13 +47,57 @@ void Trainer2::initState() {
         newState();
     buildPreview();
 }
+
+/**
+ * device-vs-host parity self-check, once at startup (~milliseconds): plays the same tiny batch through
+ * the kernel and through eval_host and compares. catches silent device breakage -- weights not arriving,
+ * a broken device search, non-advancing engine state -- instead of letting it surface as a degenerate
+ * fitness landscape. also asserts that two different models actually produce different scores.
+ */
+void Trainer2::verifyEvaluator() const {
+    constexpr std::uint32_t MODELS = 2, GAMES = 3, MOVES = 100;
+
+    sim::xoshiro256ss rng{0xC0FFEEull};
+    auto const params = ai::model_t::params();
+    std::vector<gpu::weights_t> w(MODELS * params);
+    for(auto& x : w) // uniform-ish in the model bounds
+        x = static_cast<gpu::weights_t>(ai::m::BOUNDS[0]
+            + (ai::m::BOUNDS[1] - ai::m::BOUNDS[0]) * (static_cast<double>(rng() >> 11) * 0x1.0p-53));
+
+    std::array<std::uint64_t, GAMES> const seeds{101, 202, 303};
+
+    gpu::ModelEvaluator evaluator;
+    auto const dev = evaluator.eval(w, MODELS, seeds, MOVES);
+
+    bool ok = true;
+    for(std::uint32_t m = 0; m < MODELS; ++m) {
+        auto const host = gpu::ModelEvaluator::eval_host(
+            std::span{w}.subspan(m * params, params), seeds, MOVES);
+        for(std::uint32_t s = 0; s < GAMES; ++s)
+            if(dev[m * GAMES + s] != host[s]) {
+                ok = false;
+                cth::log::msg<cth::except::ERR>(
+                    "evaluator parity: model {} game {}: device {} != host {}",
+                    m, s, dev[m * GAMES + s], host[s]);
+            }
+    }
+    if(std::ranges::equal(std::span{dev}.first(GAMES), std::span{dev}.last(GAMES)))
+        cth::log::msg<cth::except::WARNING>(
+            "evaluator parity: two distinct models scored identically -- fitness may be degenerate");
+
+    CTH_CRITICAL(!ok, "device evaluator does not match eval_host -- results would be garbage") {}
+    cth::log::msg<cth::except::INFO>("evaluator parity check passed");
+}
 void Trainer2::init() {
     cth::log::msg<cth::except::INFO>("initializing...");
     startSchedulers();
 
-    _modelPool = std::make_shared<model_pool_t>();
+    verifyEvaluator();
+
+    // one CUDA evaluator per model-scheduler thread: each leases its own stream + device buffers.
+    _evalPool = std::make_shared<eval_pool_t>();
     for(auto i = 0uz; i < _config.parallelModelInstances; ++i)
-        _modelPool->emplace();
+        _evalPool->emplace();
 
     initState();
 
@@ -101,9 +149,8 @@ void Trainer2::buildArchipelago(pagmo::algorithm const& algo) {
         algo,
         TetrisProblem2{
             {
-                _gameScheduler,
                 _modelScheduler,
-                _modelPool,
+                _evalPool,
                 _config.simulationsPerEval,
                 _config.maxMoves,
                 &_iterationSeed
@@ -113,6 +160,7 @@ void Trainer2::buildArchipelago(pagmo::algorithm const& algo) {
         _config.populationSize,
         static_cast<unsigned>(_generator())
     );
+    // algorithm::set_seed dispatches to the wrapped uda -- works for both cmaes and sep_cmaes
     for(auto& island : *_arch) {
         auto a = island.get_algorithm();
         a.set_seed(static_cast<unsigned>(_generator()));
@@ -256,15 +304,14 @@ double Trainer2::extractBestFitness() const {
 
 void Trainer2::startSchedulers() {
     _modelScheduler.start();
-    _gameScheduler.start();
 }
 void Trainer2::stopSchedulers() {
     _modelScheduler.request_stop();
-    _gameScheduler.request_stop();
     _modelScheduler.await_stop();
-    _gameScheduler.await_stop();
 
-    _modelPool->clear();
+    // unbind the evaluators from the (now stopped) scheduler threads; the instances -- and their device
+    // buffers/streams -- stay pooled for reuse and are freed when the pool dies with the trainer.
+    _evalPool->clear();
 }
 void Trainer2::nextGameSeed() const { _iterationSeed = _generator(); }
 void Trainer2::runIteration(size_t i) const {
@@ -318,7 +365,7 @@ void Trainer2::runCycle(
     std::println("\n\n");
 }
 bool Trainer2::running() const {
-    return _modelScheduler.active() || _gameScheduler.active() || _preview && _preview->running();
+    return _modelScheduler.active() || _preview && _preview->running();
 }
 void Trainer2::run(std::stop_token const& stop) {
     logRunBegin();

@@ -26,7 +26,6 @@ struct TrainerConfig2 {
     size_t populationSize;
     size_t gensPerIteration;
     size_t parallelModelInstances;
-    size_t parallelGameInstances;
     size_t simulationsPerEval;
     size_t maxMoves;
 
@@ -74,6 +73,9 @@ private:
     void startSchedulers();
     void stopSchedulers();
 
+    /** startup device-vs-host parity check of the CUDA evaluator; hard-fails on mismatch */
+    void verifyEvaluator() const;
+
     void nextGameSeed() const;
     void runIteration(size_t i) const;
 
@@ -89,9 +91,9 @@ private:
     mutable sim::xoshiro256ss _generator;
 
     cth::co::scheduler _modelScheduler;
-    cth::co::scheduler _gameScheduler;
 
-    std::shared_ptr<model_pool_t> _modelPool;
+    /** owns the per-scheduler-thread CUDA evaluators; destroyed with the trainer -> device resources freed */
+    std::shared_ptr<eval_pool_t> _evalPool;
 
     std::unique_ptr<pagmo::archipelago> _arch = nullptr;
     std::optional<ai::AiPreview> _preview{};

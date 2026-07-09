@@ -1,0 +1,51 @@
+{
+  "version": 9,
+  "include": [
+    "../../../CMakeUserPresets.json"
+  ],
+  "configurePresets": [
+    {
+      "name": "adaptivecpp_base",
+      "hidden": true,
+      "inherits": "adaptivecpp-root",
+      "cacheVariables": {
+        "ACPP_TARGETS": "generic",
+        "AdaptiveCpp_ROOT": "${sourceDir}/../../../../../compiler/adaptivecpp",
+        "ACPP_CLANG": "${sourceDir}/../../../../../compiler/adaptivecpp/bin/clang++",
+        "ACPP_EXTRA_ARGS": "-O3"
+      }
+    },
+    {
+      "name": "acpp-cth-base",
+      "hidden": true,
+      "inherits": "cth-release-base",
+      "cacheVariables": {
+        "cth_ROOT": "${sourceDir}/../../../../cth/out/install/msvc_release"
+      }
+    },
+    {
+      "name": "acpp-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "inherits": [ "adaptivecpp_base", "acpp-cth-base" ],
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/../../../lib/cth_cmake/toolchain.cmake",
+        "ACPP_TARGETS": "generic"
+      }
+    },
+    {
+      "name": "acpp-relwithdebinfo",
+      "inherits": [ "acpp-base" ],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "acpp-release",
+      "inherits": [ "acpp-base" ],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ]
+}
