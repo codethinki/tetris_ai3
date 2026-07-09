@@ -22,6 +22,11 @@ add_subdirectory(ta3_sim)
 add_subdirectory(ta3_ai)
 add_subdirectory(ta3_trainer)
 
+set(TA3_GPU_BACKEND "CUDA" CACHE STRING "GPU model-evaluator backend: CUDA or SYCL")
+set_property(CACHE TA3_GPU_BACKEND PROPERTY STRINGS CUDA SYCL)
+
+add_subdirectory(ta3_gpu)
+
 # test
 if(TA3_ENABLE_TESTS)
 	message(STATUS "enabled testing")
