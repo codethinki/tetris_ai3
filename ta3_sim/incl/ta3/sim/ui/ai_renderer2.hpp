@@ -1,6 +1,6 @@
 #pragma once
 #include "ta3/sim/board2.hpp"
-#include "ta3/sim/tetris_defs.hpp"
+#include "ta3/sim/utility/tetris_defs.hpp"
 
 #include <cstddef>
 #include <mutex>
