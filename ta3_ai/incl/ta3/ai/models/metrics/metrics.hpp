@@ -43,7 +43,7 @@ namespace dev {
     [[nodiscard]] constexpr size_t sum_set_bit_indices(uint32_t c) {
         size_t s = 0;
         for(size_t b = 0; b < HOLE_DEPTH_PLANES.size(); ++b)
-            s += (size_t{1} << b) * static_cast<size_t>(sim::popcnt(c & HOLE_DEPTH_PLANES[b]));
+            s += (size_t{1} << b) * static_cast<size_t>(sim::popcount(c & HOLE_DEPTH_PLANES[b]));
         return s;
     }
 } // namespace dev
@@ -54,7 +54,7 @@ constexpr auto hole_depths = [][[nodiscard]](sim::Board2 const& board) {
     size_t sum = 0;
     for(size_t x = 0; x < sim::WIDTH; ++x) {
         auto const c = board.raw_column(x);
-        size_t const n = static_cast<size_t>(sim::popcnt(c));
+        size_t const n = static_cast<size_t>(sim::popcount(c));
         size_t const s = dev::sum_set_bit_indices(c);
 
         size_t const pos = (H - 1) * n + n * (n + 1) / 2; // grouped so the subtraction stays >= 0
@@ -126,7 +126,7 @@ constexpr auto y_transitions = [][[nodiscard]](sim::Board2 const& board) {
         // set the floor bit at HEIGHT so an empty bottom cell counts as a transition
         uint32_t const c = board.raw_column(x) | (uint32_t{1} << sim::HEIGHT);
         // bit y of (c ^ c>>1) marks a boundary between rows y and y+1; mask to the field
-        sum += static_cast<size_t>(sim::popcnt((c ^ (c >> 1)) & FIELD));
+        sum += static_cast<size_t>(sim::popcount((c ^ (c >> 1)) & FIELD));
     }
     return sum;
 };
