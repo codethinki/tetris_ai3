@@ -9,9 +9,6 @@ include(cth_setup_utilities)
 include(cth_target_utilities)
 include(cth_install_utilities)
 
-# dlib uses nvcc; configure it before global /std:c++latest is applied.
-add_subdirectory(lib/dlib)
-
 cth_set_compiler_specifics()
 cth_set_latest_c_cpp_standard()
 set(CMAKE_CXX_SCAN_FOR_MODULES FALSE)
