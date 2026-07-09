@@ -5,8 +5,6 @@
 #include <cth/numeric.hpp>
 #include <cth/io/log.hpp>
 
-#include <omp.h>
-#include <Eigen/Core>
 #include <pagmo/types.hpp>
 
 #include <iostream>
@@ -25,13 +23,15 @@ constexpr size_t GENS_PER_ITERATION = 10;
 constexpr size_t ITERATIONS_PER_CYCLE = 10;
 
 
-constexpr size_t GAME_THREADS = 10;
-constexpr size_t MODEL_THREADS = 10;
+// double buffering
+constexpr size_t MODEL_THREADS = 2;
 
 constexpr size_t GAMES_PER_EVAL = 30;
 constexpr size_t MAX_MOVES = 300;
 
 constexpr size_t MAX_BACKUPS = 5;
+
+constexpr auto ALGO = ta3::trn::TrainerAlgo2::CMAES;
 
 
 
@@ -84,11 +84,11 @@ void train() {
             POPULATION_SIZE,
             GENS_PER_ITERATION,
             MODEL_THREADS,
-            GAME_THREADS,
             GAMES_PER_EVAL,
             MAX_MOVES,
             ITERATIONS_PER_CYCLE,
-            MAX_BACKUPS
+            MAX_BACKUPS,
+            ALGO
         }
     };
 
@@ -109,13 +109,11 @@ void train() {
 }
 
 int main() {
-    Eigen::setNbThreads(std::max(1, omp_get_max_threads()));
-
 #ifndef NDEBUG
     train();
 #else
     try { train(); }
-    catch(std::exception const& e) { CTH_STABLE_THROW(true, "exited with exception: {}", e.what()) {} }
+    catch(std::exception const& e) {cth::log::msg<cth::except::Severity::ERR>("{}", e.what()); }
     catch(...) { CTH_STABLE_THROW(true, "exited with unknown error") {} }
 #endif
     return 0;
