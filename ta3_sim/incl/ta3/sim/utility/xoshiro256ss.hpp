@@ -9,12 +9,12 @@ namespace ta3::sim {
  * @note models @c std::uniform_random_bit_generator, so it also drives the std distributions in
  *  non-constexpr code; the state is seeded through splitmix64
  */
-class Xoshiro256ss {
+class xoshiro256ss {
 public:
     using result_type = uint64_t;
 
-    constexpr Xoshiro256ss() { seed(0); }
-    constexpr explicit Xoshiro256ss(uint64_t s) { seed(s); }
+    constexpr xoshiro256ss() { seed(0); }
+    constexpr explicit xoshiro256ss(uint64_t s) { seed(s); }
 
     /** @brief reseeds the whole state from @ref s via splitmix64 */
     constexpr void seed(uint64_t s) {
@@ -30,7 +30,7 @@ public:
     static constexpr result_type min() { return 0; }
     static constexpr result_type max() { return UINT64_MAX; }
 
-    constexpr result_type operator()() {
+    [[nodiscard]] constexpr result_type operator()() {
         result_type const result = rotl(_state[1] * 5, 7) * 9;
         result_type const t = _state[1] << 17;
 
@@ -45,9 +45,14 @@ public:
     }
 
     /** @brief a uniform integer in [0, @ref bound); modulo bias is negligible for the small bounds we use */
-    constexpr result_type bounded(result_type bound) { return (*this)() % bound; }
+    [[nodiscard]] constexpr result_type bounded(result_type bound) { return (*this)() % bound; }
 
-    friend constexpr bool operator==(Xoshiro256ss const&, Xoshiro256ss const&) = default;
+    [[nodiscard]] constexpr bool operator==(xoshiro256ss const& o) const {
+        bool eq = true;
+        for(size_t i = 0; i < _state.size(); i++)
+            eq |= _state[i] == o._state[i];
+        return eq;
+    }
 
 private:
     static constexpr result_type rotl(result_type x, int k) { return (x << k) | (x >> (64 - k)); }
