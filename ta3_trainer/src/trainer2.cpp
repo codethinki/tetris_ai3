@@ -2,6 +2,8 @@
 
 
 #include "ta3/trainer/backup.hpp"
+#include "ta3/trainer/pagmo/dd_cmaes.hpp"
+#include "ta3/trainer/pagmo/sep_cmaes.hpp"
 #include "ta3/trainer/tetris_problem2.hpp"
 
 #include <zstd.h>
@@ -57,22 +59,39 @@ void Trainer2::init() {
 void Trainer2::newState() {
     cth::log::msg<cth::except::INFO>("creating new training state");
 
-    auto algo = pagmo::cmaes{
-        static_cast<unsigned>(_config.gensPerIteration),
-        -1,
-        -1,
-        -1,
-        -1,
-        1.3,
-        1e-12,
-        1e-12,
-        true,
-        false
-    };
+    switch(_config.algo) {
+        case TrainerAlgo2::CMAES: buildArchipelago(makeAlgorithm<pagmo::cmaes>());
+            break;
+        case TrainerAlgo2::SEP_CMAES: buildArchipelago(makeAlgorithm<sep_cmaes>());
+            break;
+        case TrainerAlgo2::DD_CMAES: buildArchipelago(makeAlgorithm<dd_cmaes>());
+            break;
+        default: CTH_CRITICAL(true, "unknown algorithm") {}
+    }
+}
+template<class Algo>
+pagmo::algorithm Trainer2::makeAlgorithm() const {
+    constexpr double SIGMA0 = 1.3;
+    // 0 disables the tolerance exits entirely (df < 0 / dx < 0 never hold). the game fitness is
+    // stochastic (reseeded every cycle) and can tie exactly across the population -- e.g. a fresh
+    // random population where every model scores the same -- which would trip any ftol > 0 and
+    // silently stop the search before a single evaluation
+    constexpr double FTOL = 0;
+    constexpr double XTOL = 0;
+
+    auto const gens = static_cast<unsigned>(_config.gensPerIteration);
+
+    // memory = true, force_bounds = false for all
+    auto algo = [&] {
+        if constexpr(std::same_as<Algo, dd_cmaes>)
+            return dd_cmaes{gens, SIGMA0, FTOL, XTOL, true, false};
+        else
+            return Algo{gens, -1, -1, -1, -1, SIGMA0, FTOL, XTOL, true, false};
+    }();
     algo.set_verbosity(0);
     algo.set_bfe(pagmo::bfe{pagmo::member_bfe{}});
 
-    buildArchipelago(pagmo::algorithm{std::move(algo)});
+    return pagmo::algorithm{std::move(algo)};
 }
 void Trainer2::buildArchipelago(pagmo::algorithm const& algo) {
     _arch = std::make_unique<pagmo::archipelago>(
@@ -96,7 +115,7 @@ void Trainer2::buildArchipelago(pagmo::algorithm const& algo) {
     );
     for(auto& island : *_arch) {
         auto a = island.get_algorithm();
-        a.extract<pagmo::cmaes>()->set_seed(_generator());
+        a.set_seed(static_cast<unsigned>(_generator()));
         island.set_algorithm(a);
     }
 

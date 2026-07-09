@@ -3,7 +3,7 @@
 #include "ta3/ai/preview.hpp"
 #include "ta3/trainer/tetris_problem2.hpp"
 
-#include <ta3/sim/utility.hpp>
+#include <ta3/sim/utility/xoshiro256ss.hpp>
 #include <cth/coro/scheduler.hpp>
 #include <pagmo/algorithm.hpp>
 #include <pagmo/archipelago.hpp>
@@ -14,6 +14,12 @@
 
 namespace ta3::trn {
 namespace stdfs = std::filesystem;
+
+enum class TrainerAlgo2 {
+    CMAES, ///< full covariance (pagmo::cmaes)
+    SEP_CMAES, ///< diagonal covariance, O(n) per sample, ignores correlations
+    DD_CMAES ///< diagonal decoding: fast diagonal + full correlation learning, adapted jointly
+};
 
 struct TrainerConfig2 {
     size_t islands;
@@ -26,6 +32,8 @@ struct TrainerConfig2 {
 
     size_t iterationsPerCycle;
     size_t maxBackups;
+
+    TrainerAlgo2 algo = TrainerAlgo2::CMAES;
 
     uint64_t trainingSeed = 0x3e28df7b1811145b;
 };
@@ -45,6 +53,10 @@ private:
     void newState();
     bool loadState();
     void saveState();
+
+    /** constructs @ref Algo (pagmo::cmaes-compatible) with the configured params + a member bfe */
+    template<class Algo>
+    [[nodiscard]] pagmo::algorithm makeAlgorithm() const;
 
     /** builds @ref _arch with fresh problems around @ref algo, one copy per island */
     void buildArchipelago(pagmo::algorithm const& algo);
@@ -74,7 +86,7 @@ private:
 
     stdfs::path _saveFile;
     Config _config;
-    mutable sim::Xoshiro256ss _generator;
+    mutable sim::xoshiro256ss _generator;
 
     cth::co::scheduler _modelScheduler;
     cth::co::scheduler _gameScheduler;
