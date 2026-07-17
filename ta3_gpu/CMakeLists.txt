@@ -5,7 +5,7 @@ add_library(ta3::gpu ALIAS ta3_gpu)
 
 target_include_directories(ta3_gpu PUBLIC incl)
 
-find_package(cth CONFIG REQUIRED)
+find_package(cth CONFIG REQUIRED COMPONENTS cth)
 target_link_libraries(ta3_gpu PUBLIC cth::cth ta3::sim ta3::ai)
 
 cth_target_enable_build_cache(ta3_gpu OPTIONAL)

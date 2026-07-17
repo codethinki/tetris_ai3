@@ -10,3 +10,5 @@ target_link_libraries(
         PRIVATE
         ta3::trainer
 )
+
+cth_target_copy_dependencies(ta3_trainer_runner)
