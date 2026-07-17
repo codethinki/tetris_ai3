@@ -1,13 +1,23 @@
 #include "ta3/ai/preview.hpp"
+
+#include "boost/property_map/property_map.hpp"
+
 #include "ta3/sim/ui/ai_renderer2.hpp"
+
+#include <execution>
+#include <print>
 
 #include <ta3/sim/board2.hpp>
 
 #include <random>
+#include <ranges>
 #include <span>
 #include <vector>
 
+#include <cth/chrono.hpp>
+
 namespace ta3::ai {
+namespace stdchr = std::chrono;
 
 AiPreview::AiPreview(std::vector<double> params) : _params{std::move(params)} {}
 
@@ -29,7 +39,7 @@ void AiPreview::stop() {
 void AiPreview::startRenderer() {
     _runThread = std::jthread{
         [this](std::stop_token t) {
-            size_t const sims = simulations();
+            auto const sims = simulations();
             if(sims == 0)
                 return;
 
@@ -37,10 +47,11 @@ void AiPreview::startRenderer() {
 
 
             std::random_device rd{};
+            std::mutex rdMtx{};
 
             // one model + one persistent game per simulation
             std::vector<model_t> models(sims);
-            std::vector<AiTetris> games;
+            std::vector<AiTetris> games{};
             games.reserve(sims);
             for(size_t i = 0; i < sims; ++i) {
                 models[i].loadWeights(std::span{_params}.subspan(i * paramCount, paramCount));
@@ -50,15 +61,32 @@ void AiPreview::startRenderer() {
             std::vector<sim::Board2> boards(sims);
 
             while(!t.stop_requested()) {
-                for(size_t i = 0; i < sims; ++i) {
-                    if(games[i].gameOver())
-                        games[i].reset(rd()); // restart dead games in place
-                    games[i].step(models[i]);
-                    boards[i] = games[i].board();
-                }
+                auto const frameStart = stdchr::high_resolution_clock::now();
+
+                auto zip = std::views::zip(games, boards, models);
+
+                std::for_each(
+                    std::execution::par_unseq,
+                    zip.begin(),
+                    zip.end(),
+                    [&rd, &rdMtx](auto const& tuple) {
+                        auto& [game, board, model] = tuple;
+                        if(game.gameOver()) {
+                            std::scoped_lock _{rdMtx};
+                            game.reset(rd());
+                        }
+                        game.step(model);
+                        board = game.board();
+                    }
+                );
+
 
                 _renderer->update(boards);
-                std::this_thread::sleep_for(MOVE_DELAY);
+                auto const frameEnd = stdchr::high_resolution_clock::now();
+                auto const frameTime = stdchr::duration_cast<stdchr::milliseconds>(frameEnd - frameStart);
+
+                if(auto const sleep = MOVE_DELAY - frameTime; sleep > std::chrono::milliseconds{0})
+                    std::this_thread::sleep_for(sleep);
             }
         }
     };
