@@ -36,9 +36,9 @@ std::vector<float> ModelEvaluator::eval_host(
         sim::TetrisEngine game{seeds[g]};
         ai::stats_v4 stats{}; // committed on every move, scored at the end -- identical to the kernel
 
-        for(std::uint32_t mv = 0; mv < max_moves && !game.gameOver(); ++mv) {
+        for(std::uint32_t i = 0; i < max_moves && !game.gameOver(); ++i) {
             auto const r = search::search_move_beam(game, model);
-            if(r.none)
+            if(r.none())
                 break;
 
             if(r.move.hold)
