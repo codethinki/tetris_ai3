@@ -1,5 +1,5 @@
 #pragma once
-#include "models/models/model_v7.hpp"
+#include "models/models/model_v11.hpp"
 
 #include <ta3/sim/board2.hpp>
 
@@ -35,12 +35,15 @@ concept model =
         // score a single input vector
         { m.forward(input) } -> std::same_as<std::array<data_t, T::OUTPUTS>>;
 
-        // the search seam: value = model(path clear histogram, leaf board) -- CPU search + the GPU net_ref
-        { m.evaluate(clear_hist_t{}, board) } -> std::convertible_to<data_t>;
+        // the search seam: value = model(path clear histogram, leaf board, hold-is-I flag) -- CPU search
+        // + the GPU net_ref
+        { m.evaluate(clear_hist_t{}, board, bool{}) } -> std::convertible_to<data_t>;
     };
 
 
-using model_t = ModelV7;
+using model_t = ModelV11;
+using stats_t = stats_v4;
+
 static_assert(model<model_t>, "the selected model version must satisfy the model concept");
 
 namespace m {

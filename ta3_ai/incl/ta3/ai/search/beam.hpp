@@ -53,6 +53,8 @@ struct plan_tree {
         layer_idx_t childBegin = 0; ///< child range [childBegin, childEnd) at the next layer
         layer_idx_t childEnd = 0; ///< (empty at the last layer)
         bool rootHold = false; ///< whether reaching this node commits a hold (layer 0 only)
+        layer_idx_t heldSlot = HELD_NONE_SLOT;
+        ///< window slot in hold after this level's decision (HELD_NONE_SLOT if empty)
     };
 
     std::array<std::array<node_t, MAX_SEQUENCES>, DEPTH> nodes{};
@@ -66,14 +68,14 @@ namespace dev {
     /** @brief regroup the flat slot plans into the per-level prefix tree. */
     [[nodiscard]] constexpr plan_tree build_tree(bool held_empty) {
         plan_tree tree{};
-        plan_set const& plans = PLANS[held_empty ? 1 : 0];
+        auto const& plans = PLANS[held_empty ? 1 : 0];
 
         // planNode[planIdx]: the node owning that plan's prefix at the layer being built
         std::array<layer_idx_t, MAX_SEQUENCES> planNode{};
 
         // layer 0: dedup (slot0, rootHold) in first-appearance order
         for(std::uint32_t planIdx = 0; planIdx < plans.count; ++planIdx) {
-            seq_plan const& plan = plans.data[planIdx];
+            auto const& plan = plans.data[planIdx];
 
             std::uint32_t nodeIdx = 0;
             while(nodeIdx < tree.count[0]
@@ -82,8 +84,11 @@ namespace dev {
             if(nodeIdx == tree.count[0]) {
                 tree.nodes[0][nodeIdx].slot = plan.slot(0);
                 tree.nodes[0][nodeIdx].rootHold = plan.rootHold();
+                tree.nodes[0][nodeIdx].heldSlot = plan.held_slot(0);
                 ++tree.count[0];
             }
+            else if(tree.nodes[0][nodeIdx].heldSlot != plan.held_slot(0))
+                throw "plan_tree::build_tree: held_slot mismatch at layer 0";
             planNode[planIdx] = static_cast<layer_idx_t>(nodeIdx);
         }
 
@@ -98,7 +103,7 @@ namespace dev {
                 for(std::uint32_t planIdx = 0; planIdx < plans.count; ++planIdx) {
                     if(planNode[planIdx] != parentIdx)
                         continue;
-                    seq_plan const& plan = plans.data[planIdx];
+                    auto const& plan = plans.data[planIdx];
 
                     std::uint32_t nodeIdx = tree.nodes[level - 1][parentIdx].childBegin;
                     while(nodeIdx < tree.count[level] && tree.nodes[level][nodeIdx].slot != plan.slot(level))
@@ -106,8 +111,11 @@ namespace dev {
                     if(nodeIdx == tree.count[level]) {
                         tree.nodes[level][nodeIdx].slot = plan.slot(level);
                         tree.nodes[level][nodeIdx].parentIdx = static_cast<layer_idx_t>(parentIdx);
+                        tree.nodes[level][nodeIdx].heldSlot = plan.held_slot(level);
                         ++tree.count[level];
                     }
+                    else if(tree.nodes[level][nodeIdx].heldSlot != plan.held_slot(level))
+                        throw "plan_tree::build_tree: held_slot mismatch";
                     nextNode[planIdx] = static_cast<layer_idx_t>(nodeIdx);
                 }
                 tree.nodes[level - 1][parentIdx].childEnd = tree.count[level];
@@ -123,9 +131,9 @@ namespace dev {
     [[nodiscard]] constexpr std::uint32_t max_child_span(std::uint32_t lo, std::uint32_t hi) {
         std::uint32_t m = 1;
         for(auto const& tree : PLAN_TREES)
-            for(std::uint32_t level = lo; level <= hi && level < DEPTH; ++level)
+            for(auto level = lo; level <= hi && level < DEPTH; ++level)
                 for(std::uint32_t nodeIdx = 0; nodeIdx < tree.count[level]; ++nodeIdx) {
-                    std::uint32_t const width = static_cast<std::uint32_t>(tree.nodes[level][nodeIdx].childEnd)
+                    auto const width = static_cast<std::uint32_t>(tree.nodes[level][nodeIdx].childEnd)
                         - tree.nodes[level][nodeIdx].childBegin;
                     m = width > m ? width : m;
                 }
@@ -221,7 +229,7 @@ inline constexpr std::uint32_t ROOT_SLOTS = MAX_ROOT_GROUPS * MAX_PLACEMENTS;
     std::span<sim::PieceType const> lookahead
 ) {
     std::array<sim::PieceType, NUM_SLOTS> slot{};
-    slot[HELD_SLOT] = held;
+    slot[SEQ_HELD_SLOT] = held;
     slot[win_slot(0)] = current;
     for(std::uint32_t i = 0; i < DEPTH; ++i)
         slot[win_slot(1 + i)] = lookahead[i];
@@ -280,11 +288,13 @@ namespace dev {
     ) {
         std::array<score_t, ROOT_SLOTS> scores{};
         for(std::uint32_t groupIdx = 0; groupIdx < tree.count[0]; ++groupIdx) {
-            auto const piece0 = slot[tree.nodes[0][groupIdx].slot];
-            for(std::uint32_t i0 = 0; i0 < theo_count(piece0); ++i0) {
+            auto const& node = tree.nodes[0][groupIdx];
+            auto const piece0 = slot[node.slot];
+            auto const heldIsI = node.heldSlot == HELD_NONE_SLOT ? false : slot[node.heldSlot] == sim::PieceType::I;
+            for(std::uint32_t i0 = 0; i0 < n_theoretical_placements(piece0); ++i0) {
                 auto const [newBoard, clears, ok] = apply(board, {}, nth_placement(piece0, i0));
                 scores[groupIdx * MAX_PLACEMENTS + i0] =
-                    ok ? ordered_bits(static_cast<float>(model.evaluate(clears, newBoard))) : 0u;
+                    ok ? ordered_bits(static_cast<float>(model.evaluate(clears, newBoard, heldIsI))) : 0u;
             }
         }
         return scores;
@@ -304,11 +314,14 @@ namespace dev {
         frontier_t& kept0
     ) {
         for(std::uint32_t k = 0; k < root_count; ++k) {
-            std::uint32_t const groupIdx = root_slots[k] / MAX_PLACEMENTS;
-            auto const s0 =
-                apply(board, {}, nth_placement(slot[tree.nodes[0][groupIdx].slot], root_slots[k] % MAX_PLACEMENTS));
-            kept0.board[k] = s0.board;
-            kept0.clears[k] = s0.accum;
+            auto const groupIdx = root_slots[k] / MAX_PLACEMENTS;
+            auto const s0 = apply(
+                board,
+                {},
+                nth_placement(slot[tree.nodes[0][groupIdx].slot], root_slots[k] % MAX_PLACEMENTS)
+            );
+            kept0.board[k] = s0.nextBoard;
+            kept0.clears[k] = s0.nextClearHist;
             kept0.score[k] = root_scores[k];
             kept0.node[k] = static_cast<layer_idx_t>(groupIdx);
             kept0.rootRank[k] = static_cast<root_rank_t>(k);
@@ -339,13 +352,19 @@ namespace dev {
         for(std::uint32_t k = 0; k < kept_count; ++k) {
             auto const& pnode = tree.nodes[level - 1][frontier.node[k]];
             for(std::uint32_t childIdx = pnode.childBegin; childIdx < pnode.childEnd; ++childIdx) {
-                auto const piece = slot[tree.nodes[level][childIdx].slot];
-                std::uint32_t const base = (k * MAX_CHILD_MID + (childIdx - pnode.childBegin)) * MAX_PLACEMENTS;
-                for(std::uint32_t i = 0; i < theo_count(piece); ++i) {
+                auto const& cnode = tree.nodes[level][childIdx];
+                auto const piece = slot[cnode.slot];
+                auto const heldIsI = cnode.heldSlot == HELD_NONE_SLOT
+                                     ? false
+                                     : slot[cnode.heldSlot] == sim::PieceType::I;
+                auto const base = (k * MAX_CHILD_MID + (childIdx - pnode.childBegin)) * MAX_PLACEMENTS;
+                for(std::uint32_t i = 0; i < n_theoretical_placements(piece); ++i) {
                     auto const s = apply(frontier.board[k], frontier.clears[k], nth_placement(piece, i));
-                    if(!s.ok)
+                    if(!s.legal)
                         continue;
-                    mid_scores[base + i] = ordered_bits(static_cast<float>(model.evaluate(s.accum, s.board)));
+                    mid_scores[base + i] = ordered_bits(
+                        static_cast<float>(model.evaluate(s.nextClearHist, s.nextBoard, heldIsI))
+                    );
                     has_child[k] = true;
                 }
             }
@@ -367,16 +386,16 @@ namespace dev {
         frontier_t& next
     ) {
         for(std::uint32_t j = 0; j < selected_slots.size(); ++j) {
-            std::uint32_t const k = selected_slots[j] / (MAX_CHILD_MID * MAX_PLACEMENTS);
+            auto const k = selected_slots[j] / (MAX_CHILD_MID * MAX_PLACEMENTS);
             auto const& pnode = tree.nodes[level - 1][frontier.node[k]];
-            std::uint32_t const childIdx = pnode.childBegin + (selected_slots[j] / MAX_PLACEMENTS) % MAX_CHILD_MID;
-            auto const s = apply(
+            auto const childIdx = pnode.childBegin + (selected_slots[j] / MAX_PLACEMENTS) % MAX_CHILD_MID;
+            auto const step = apply(
                 frontier.board[k],
                 frontier.clears[k],
                 nth_placement(slot[tree.nodes[level][childIdx].slot], selected_slots[j] % MAX_PLACEMENTS)
             );
-            next.board[j] = s.board;
-            next.clears[j] = s.accum;
+            next.board[j] = step.nextBoard;
+            next.clears[j] = step.nextClearHist;
             next.score[j] = selected_scores[j];
             next.node[j] = static_cast<layer_idx_t>(childIdx);
             next.rootRank[j] = frontier.rootRank[k];
@@ -396,15 +415,26 @@ namespace dev {
         for(std::uint32_t j = 0; j < kept_count; ++j) {
             auto const& lnode = tree.nodes[DEPTH - 2][frontier.node[j]];
             for(std::uint32_t childIdx = lnode.childBegin; childIdx < lnode.childEnd; ++childIdx) {
-                auto const piece = slot[tree.nodes[DEPTH - 1][childIdx].slot];
-                std::uint32_t const base = (j * MAX_LAST + (childIdx - lnode.childBegin)) * MAX_PLACEMENTS;
-                bool expanded = false;
-                for(std::uint32_t i = 0; i < theo_count(piece); ++i) {
-                    auto const s = apply(frontier.board[j], frontier.clears[j], nth_placement(piece, i));
-                    if(!s.ok)
+                auto const& cnode = tree.nodes[DEPTH - 1][childIdx];
+                auto const piece = slot[cnode.slot];
+                auto const heldIsI = cnode.heldSlot == HELD_NONE_SLOT
+                                     ? false
+                                     : slot[cnode.heldSlot] == sim::PieceType::I;
+                auto const base = (j * MAX_LAST + (childIdx - lnode.childBegin)) * MAX_PLACEMENTS;
+                auto expanded = false;
+                for(std::uint32_t i = 0; i < n_theoretical_placements(piece); ++i) {
+                    auto const [nextBoard, nextClearHist, legal] = apply(
+                        frontier.board[j],
+                        frontier.clears[j],
+                        nth_placement(piece, i)
+                    );
+                    if(!legal)
                         continue;
                     expanded = true;
-                    consider(ordered_bits(static_cast<float>(model.evaluate(s.accum, s.board))), base + i);
+                    consider(
+                        ordered_bits(static_cast<float>(model.evaluate(nextClearHist, nextBoard, heldIsI))),
+                        base + i
+                    );
                 }
                 if(!expanded) // the last piece never fit: the frontier board is the leaf (score already known)
                     consider(frontier.score[j], base);
@@ -435,8 +465,7 @@ namespace dev {
         auto const pl0 = nth_placement(slot[rootNode.slot], root_slots[rootRank] % MAX_PLACEMENTS);
         return {
             sim::drop_place_t{pl0.orientation, pl0.x, rootNode.rootHold},
-            ordered_bits_inv(static_cast<score_t>(best_key >> 32)),
-            false
+            ordered_bits_inv(static_cast<score_t>(best_key >> 32))
         };
     }
 
@@ -449,7 +478,7 @@ namespace dev {
  *  model_t feature is mirror-invariant.
  * @tparam Ks per-level beam widths (default @ref BEAM_WIDTHS).
  * @param model model(clear_t, sim::Board2 const&) -> value_t.
- * @return best root move + looked-ahead score, or {.none = true} if game over / no legal move.
+ * @return best root move + looked-ahead score, or a result with @c none() true if game over / no legal move.
  */
 template<beam_widths_t Ks = BEAM_WIDTHS, class Model>
 [[nodiscard]] constexpr search_result search_move_beam(sim::TetrisEngine const& game, Model const& model) {
@@ -462,24 +491,24 @@ template<beam_widths_t Ks = BEAM_WIDTHS, class Model>
         }(),
         "every beam width must be >= 1"
     );
-    constexpr std::uint32_t k0 = Ks[0];
-    constexpr std::uint32_t kMax = max_width(Ks);
-    constexpr std::uint32_t mid = mid_slots(Ks);
-    constexpr order_t leafOrderCount = leaf_orders(last_width(Ks));
-    constexpr order_t orderCount = order_span(Ks);
+    constexpr auto k0 = Ks[0];
+    constexpr auto kMax = max_width(Ks);
+    constexpr auto mid = mid_slots(Ks);
+    constexpr auto leafOrderCount = leaf_orders(last_width(Ks));
+    constexpr auto orderCount = order_span(Ks);
 
     if(game.gameOver())
         return {};
 
     auto const slot = gather_slots(game.currentPiece(), game.heldPiece(), game.lookahead());
-    plan_tree const& tree = dev::PLAN_TREES[game.heldPiece() == sim::TetrisEngine::NO_PIECE ? 1 : 0];
+    auto const& tree = dev::PLAN_TREES[game.heldPiece() == sim::TetrisEngine::NO_PIECE ? 1 : 0];
     auto board = game.board();
 
     // stage 0: score and select the roots
     auto rootScores = dev::score_roots(tree, slot, board, model);
     std::array<slot_t, k0> topRootSlots{};
     std::array<score_t, k0> topRootScores{};
-    std::uint32_t const rootCount = select_top(rootScores, topRootSlots, topRootScores);
+    auto const rootCount = select_top(rootScores, topRootSlots, topRootScores);
     if(rootCount == 0)
         return {}; // no legal root placement
 
@@ -511,7 +540,7 @@ template<beam_widths_t Ks = BEAM_WIDTHS, class Model>
     for(std::uint32_t level = 1; level + 1 < DEPTH; ++level) {
         dev::score_mid_level(tree, slot, level, kept[cur], keptCount, model, midScores, hasChild);
 
-        std::uint32_t const nextCount = select_top(
+        auto const nextCount = select_top(
             midScores,
             std::span{topMidSlots}.first(Ks[level]),
             std::span{topMidScores}.first(Ks[level])

@@ -22,7 +22,7 @@ size_t load(std::span<double const> weights, auto& model) {
     dlib::visit_layer_parameters(
         model,
         [&offset, weights](dlib::tensor& layer) {
-            size_t const size = layer.size();
+            auto const size = layer.size();
             if(size == 0)
                 return;
 
@@ -42,7 +42,7 @@ size_t load(std::span<double const> weights, auto& model) {
         dlib::visit_layer_parameters(
             model,
             [&offset, weights](dlib::tensor const& layer) {
-                size_t const size = layer.size();
+                auto const size = layer.size();
                 if(size == 0)
                     return;
                 std::span actual{layer.host(), size};
@@ -86,7 +86,7 @@ size_t size(auto& model) {
     dlib::visit_layer_parameters(
         model,
         [&sum](dlib::tensor const& layer) {
-            size_t size = layer.size();
+            auto size = layer.size();
             sum += size;
         }
     );

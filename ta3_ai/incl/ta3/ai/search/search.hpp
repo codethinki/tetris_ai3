@@ -37,14 +37,15 @@ inline constexpr value_t DEATH_VALUE = -std::numeric_limits<value_t>::infinity()
 struct search_result {
     sim::drop_place_t move{};
     value_t value = DEATH_VALUE;
-    bool none = true;
+
+    [[nodiscard]] constexpr bool none() const { return value == DEATH_VALUE; }
 };
 
 /** result of dropping one piece: the resulting board, the path's clear histogram, and legality. */
 struct step {
-    sim::Board2 board{};
-    clear_t accum{};
-    bool ok = false;
+    sim::Board2 nextBoard{};
+    clear_t nextClearHist{};
+    bool legal = false;
 };
 
 /**
@@ -55,15 +56,16 @@ struct step {
  *  (@ref sim::Board2::fit = spawn-collision + drop distance, @ref sim::Board2::placed = copy + lock-in)
  *  instead of the four separate available/copy/dropDistance/place passes: fewer instructions and a
  *  smaller live window in the register-capped kernel. horizontal bounds hold by LUT construction.
+ *  @return @ref step object
  */
-[[nodiscard]] constexpr step apply(sim::Board2 const& board, clear_t accum, placement pl) {
-    auto const [drop, ok] = board.fit(pl.shape);
-    if(!ok)
-        return {board, accum, false};
+[[nodiscard]] constexpr step apply(sim::Board2 const& board, clear_t clear_hist, placement pl) {
+    auto const [dist, legal] = board.fit(pl.shape);
+    if(!legal)
+        return {board, clear_hist, false};
 
-    sim::Board2 next = board.placed(pl.shape, drop);
+    auto next = board.placed(pl.shape, dist);
     auto const cleared = static_cast<std::uint32_t>(next.clearLines());
-    return {next, accum.added(cleared), true};
+    return {next, clear_hist.added(cleared), true};
 }
 
 namespace dev {
@@ -80,21 +82,21 @@ namespace dev {
         move_seq const& seq,
         std::uint32_t level,
         sim::Board2 const& board,
-        clear_t accum,
+        clear_t clear_hist,
         Model const& model,
         Consider const& consider
     ) {
-        sim::PieceType const p = seq.pieces[level];
+        auto const p = seq.pieces[level];
 
-        bool any = false;
-        for(std::uint32_t i = 0; i < theo_count(p); ++i) {
-            step const s = apply(board, accum, nth_placement(p, i));
-            if(!s.ok)
+        auto any = false;
+        for(std::uint32_t i = 0; i < n_theoretical_placements(p); ++i) {
+            auto const [nextBoard, nextClearHist, legal] = apply(board, clear_hist, nth_placement(p, i));
+            if(!legal)
                 continue;
             any = true;
 
-            if(level + 1 == DEPTH || !expand_suffix(seq, level + 1, s.board, s.accum, model, consider))
-                consider(model.evaluate(s.accum, s.board.canonical()));
+            if(level + 1 == DEPTH || !expand_suffix(seq, level + 1, nextBoard, nextClearHist, model, consider))
+                consider(model.evaluate(nextClearHist, nextBoard.canonical(), seq.heldIsI[level]));
         }
         return any;
     }
@@ -105,7 +107,7 @@ namespace dev {
  * depth-@ref DEPTH brute lookahead for one game.
  * @param game  the committed game state (left untouched)
  * @param model device value model: @c model(clear_t clearAccum, sim::Board2 const& canonicalLeaf) -> value_t
- * @return the best root move + its looked-ahead value, or @c {.none = true} if the game is over / has no move
+ * @return the best root move + its looked-ahead value, or a result with @c none() true if the game is over / has no move
  * @details expands every hold-resolved sequence (@ref generate_sequences) and, under it, the full
  *  cartesian product of legal placements (@ref dev::expand_suffix). a prefix that cannot be extended (no
  *  legal next placement) is scored where it stopped, so any legal root move always yields at least a
@@ -116,30 +118,31 @@ template<class Model>
     if(game.gameOver())
         return {};
 
-    sim::Board2 const& board = game.board();
-    seq_set const seqs = generate_sequences(game.currentPiece(), game.heldPiece(), game.lookahead());
+    auto const& board = game.board();
+    auto const sequences = generate_sequences(game.currentPiece(), game.heldPiece(), game.lookahead());
 
-    search_result best; // none == true, value == DEATH_VALUE
+    search_result best{};
 
     auto const consider = [&](value_t v, sim::drop_place_t root) {
-        if(best.none || v > best.value)
-            best = {root, v, false};
+        if(best.none() || v > best.value)
+            best = {root, v};
     };
 
-    for(auto const& seq : seqs) {
-        sim::PieceType const p0 = seq.pieces[0];
+    for(auto const& seq : sequences) {
+        auto const nextPiece = seq.pieces[0];
 
-        for(std::uint32_t i0 = 0; i0 < theo_count(p0); ++i0) {
-            placement const pl0 = nth_placement(p0, i0);
-            step const s0 = apply(board, {}, pl0);
-            if(!s0.ok)
+        for(std::uint32_t i = 0; i < n_theoretical_placements(nextPiece); ++i) {
+            auto const placement = nth_placement(nextPiece, i);
+            auto const [nextBoard, clearHist, legal] = apply(board, {}, placement);
+            if(!legal)
                 continue;
 
-            sim::drop_place_t const root{pl0.orientation, pl0.x, seq.rootHold};
-            auto const considerLeaf = [&](value_t v) { consider(v, root); };
+            sim::drop_place_t const root{placement.orientation, placement.x, seq.rootHold};
+            auto const consider_leaf = [&](value_t v) { consider(v, root); };
 
-            if(!dev::expand_suffix(seq, 1, s0.board, s0.accum, model, considerLeaf))
-                consider(model.evaluate(s0.accum, s0.board.canonical()), root); // p1 never fit: depth-1 leaf
+            // p1 never fit: depth-1 leaf
+            if(!dev::expand_suffix(seq, 1, nextBoard, clearHist, model, consider_leaf))
+                consider(model.evaluate(clearHist, nextBoard.canonical(), seq.heldIsI[0]), root);
         }
     }
 

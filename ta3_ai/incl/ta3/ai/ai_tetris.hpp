@@ -32,11 +32,11 @@ public:
      * @return rows cleared, or @ref sim::TetrisEngine::DIED on a game-ending move or when no move is legal.
      */
     constexpr size_t step(model_t const& model) {
-        search::search_result const r = search::search_move(_game, model);
-        if(r.none)
+        auto const searchResult = search::search_move(_game, model);
+        if(searchResult.none())
             return sim::TetrisEngine::DIED;
 
-        _lastMove = r.move;
+        _lastMove = searchResult.move;
         if(_lastMove.hold)
             _game.hold();
         return _game.place(_lastMove.orientation, _lastMove.x);

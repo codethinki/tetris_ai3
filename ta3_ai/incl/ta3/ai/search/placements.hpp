@@ -69,8 +69,8 @@ struct ori_range {
 
 [[nodiscard]] constexpr ori_range orientation_range(sim::PieceType piece, sim::Orientation orientation) {
     auto const [left, cols] = sim::piece_columns2(piece, orientation);
-    int const xMin = -left;
-    int const xMax = static_cast<int>(sim::WIDTH) - left - static_cast<int>(cols.size());
+    auto const xMin = -left;
+    auto const xMax = static_cast<int>(sim::WIDTH) - left - static_cast<int>(cols.size());
     return {xMin, xMax};
 }
 
@@ -87,7 +87,7 @@ namespace dev {
 
     [[nodiscard]] constexpr placement decode(sim::PieceType piece, std::uint8_t byte) {
         auto const orientation = static_cast<sim::Orientation>(byte & 0x3u);
-        int const x = static_cast<int>((byte >> 2) & 0xFu) - X_BIAS;
+        auto const x = static_cast<int>((byte >> 2) & 0xFu) - X_BIAS;
         return {orientation, x, sim::piece_shape_at(piece, orientation, x)};
     }
 
@@ -110,7 +110,7 @@ namespace dev {
         std::uint32_t minbit = 32;
         for(auto const c : pc.cols)
             if(c != 0) {
-                std::uint32_t const b = ctz(c);
+                auto const b = ctz(c);
                 if(b < minbit)
                     minbit = b;
             }
@@ -146,9 +146,9 @@ namespace dev {
 
         for(std::uint32_t o = 0; o < *sim::Orientation::SIZE; ++o) {
             auto const orientation = static_cast<sim::Orientation>(o);
-            shape_sig const sg = signature(piece, orientation);
+            auto const sg = signature(piece, orientation);
 
-            bool dup = false;
+            auto dup = false;
             for(std::uint32_t j = 0; j < seenN; ++j)
                 if(same_sig(seen[j], sg)) {
                     dup = true;
@@ -196,7 +196,7 @@ namespace dev {
             for(std::uint32_t i = 0; i < reps.n; ++i) {
                 auto const orientation = reps.ori[i];
                 auto const range = orientation_range(piece, orientation);
-                for(int x = range.xMin; x <= range.xMax; ++x)
+                for(auto x = range.xMin; x <= range.xMax; ++x)
                     out.data[w++] = encode(orientation, x);
             }
         }
@@ -207,7 +207,7 @@ namespace dev {
 } // namespace dev
 
 /** number of (deduped) theoretical placements of @p piece -- the loop bound for the search. */
-[[nodiscard]] constexpr std::uint32_t theo_count(sim::PieceType piece) {
+[[nodiscard]] constexpr std::uint32_t n_theoretical_placements(sim::PieceType piece) {
     return dev::PLACEMENT_LUT.offset[*piece + 1] - dev::PLACEMENT_LUT.offset[*piece];
 }
 
@@ -222,8 +222,8 @@ namespace dev {
 /** upper bound on placements of any single piece -- the tightest static cap over all piece types. */
 inline constexpr std::uint32_t MAX_PLACEMENTS = [] {
     std::uint32_t m = 0;
-    for(std::uint32_t p = 0; p < *sim::PieceType::COUNT; ++p) {
-        auto const c = theo_count(static_cast<sim::PieceType>(p));
+    for(std::uint32_t typeIdx = 0; typeIdx < *sim::PieceType::COUNT; ++typeIdx) {
+        auto const c = n_theoretical_placements(static_cast<sim::PieceType>(typeIdx));
         if(c > m)
             m = c;
     }

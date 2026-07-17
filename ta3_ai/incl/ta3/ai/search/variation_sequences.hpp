@@ -9,22 +9,6 @@
 #include <cstdint>
 #include <span>
 
-/**
- * compile-time override for the beam widths: a comma-separated list, one width per kept level. the search
- * depth is DERIVED from it -- @c DEPTH == count + 1, since the leaf stage expands the last kept frontier
- * without a width of its own. see @ref ta3::ai::search::BEAM_WIDTHS.
- */
-#ifndef TA3_BEAM_WIDTHS
-    #define TA3_BEAM_WIDTHS 16, 32
-#endif
-
-// preprocessor-level width count, so legacy depth-gated code (work.hpp) can keep using #if. the EXPAND
-// indirection keeps MSVC's classic preprocessor happy; static_assert below pins it to BEAM_WIDTHS.size().
-#define TA3_DETAIL_EXPAND(x) x
-#define TA3_DETAIL_NARG_(a1, a2, a3, a4, a5, a6, a7, a8, N, ...) N
-#define TA3_DETAIL_NARG(...) TA3_DETAIL_EXPAND(TA3_DETAIL_NARG_(__VA_ARGS__, 8, 7, 6, 5, 4, 3, 2, 1))
-#define TA3_SEARCH_DEPTH (TA3_DETAIL_NARG(TA3_BEAM_WIDTHS) + 1)
-
 namespace ta3::ai::search {
 
 /**
@@ -35,15 +19,14 @@ namespace ta3::ai::search {
  *  level, and under @c --expt-relaxed-constexpr a host constexpr array is usable in device code only where
  *  the access constant-folds (see @c CLEAR_SCORE / @c PLACEMENT_LUT for the same rule).
  */
-TA3_CUDA_CONSTANT auto BEAM_WIDTHS = std::to_array<std::uint32_t>({TA3_BEAM_WIDTHS});
+TA3_CUDA_CONSTANT auto BEAM_WIDTHS = std::to_array<std::uint32_t>({16, 32, 32});
 
-/** lookahead depth searched each move (current piece + the next @c DEPTH-1); see @ref BEAM_WIDTHS. */
+/** searched lookahead depth */
 inline constexpr std::uint32_t DEPTH = static_cast<std::uint32_t>(BEAM_WIDTHS.size()) + 1;
 
 /** per-move beam widths, one entry per kept level (levels @c [0, DEPTH-1)). */
 using beam_widths_t = std::array<std::uint32_t, DEPTH - 1>;
 
-static_assert(DEPTH == TA3_SEARCH_DEPTH, "the preprocessor width count must match BEAM_WIDTHS.size()");
 static_assert(DEPTH >= 2, "the beamed search needs at least a root stage and a leaf stage");
 // hold-from-empty can consume up to window slot DEPTH == lookahead[DEPTH-1], and the engine exposes
 // PIECE_QUEUE_SIZE-1 lookahead pieces -- the binding depth cap.
@@ -66,13 +49,20 @@ inline constexpr std::uint32_t MAX_SEQUENCES = 1u << DEPTH;
  * @c 1+i = @c lookahead[i-1] (window slot @c i). @ref dev::build_plans references at most slot @c DEPTH+1.
  */
 inline constexpr std::uint32_t NUM_SLOTS = DEPTH + 2;
-inline constexpr std::uint8_t HELD_SLOT = 0;
-[[nodiscard]] constexpr std::uint8_t win_slot(std::uint32_t i) { return static_cast<std::uint8_t>(1 + i); }
+inline constexpr std::uint8_t SEQ_HELD_SLOT = 0;
 
-/** one hold-resolved line: the piece placed at each level, and whether level 0 committed a hold. */
+} // namespace ta3::ai::search
+
+
+namespace ta3::ai::search {
+
 struct move_seq {
+    /** placed piece sequence */
     std::array<sim::PieceType, DEPTH> pieces{};
-    bool rootHold = false; // sourced from the compile-time plan, never computed per move
+    /** true if root held before place */
+    bool rootHold = false;
+    /** hold-contains-I flag in effect when the board at each level is evaluated */
+    std::array<bool, DEPTH> heldIsI{};
 };
 
 /** the small fixed-capacity set of distinct sequences for one move. */
@@ -85,12 +75,57 @@ struct seq_set {
     [[nodiscard]] constexpr move_seq const* end() const { return data.data() + count; }
 };
 
+/** the window slot for lookahead index @p i (@c 0 = current, @c 1+i = @c lookahead[i]). */
+[[nodiscard]] constexpr std::uint8_t win_slot(std::uint32_t i);
+
+/**
+ * @brief enumerate the distinct hold-resolved piece sequences for one move.
+ * @param current the piece to place now (window slot 0)
+ * @param held    the held piece, or @ref sim::NO_PIECE if the slot is empty
+ * @param lookahead the upcoming pieces after @p current, soonest first (@c TetrisEngine::lookahead)
+ * @details pure dispatch: select the compile-time slot plan for this hold state, then gather the concrete
+ *  pieces into its slots. no per-move hold simulation and no branches; @c count is fixed per hold state.
+ *  reads @c lookahead[0..DEPTH-1] (a @ref sim::PIECE_QUEUE_SIZE of 5 has margin).
+ */
+constexpr void generate_sequences_into(
+    seq_set& set,
+    sim::PieceType current,
+    sim::PieceType held,
+    std::span<sim::PieceType const> lookahead
+);
+
+/**
+ * return-by-value convenience wrapper. on the GPU prefer @ref generate_sequences_into to write straight into
+ * the block's shared @c seq_set -- returning the ~132-byte aggregate here lands it on the (tiny) device stack.
+ */
+[[nodiscard]] constexpr seq_set generate_sequences(
+    sim::PieceType current,
+    sim::PieceType held,
+    std::span<sim::PieceType const> lookahead
+);
+
+} // namespace ta3::ai::search
+
+
+namespace ta3::ai::search {
+
+[[nodiscard]] constexpr std::uint8_t win_slot(std::uint32_t i) { return static_cast<std::uint8_t>(1 + i); }
+
+} // namespace ta3::ai::search
+
+
+
+namespace ta3::ai::search {
+
 namespace dev {
 
     /**
-     * @brief encodes which @b slot is placed at each search stage, and the level-0 hold flag,
-     * @details packed into a single @c uint32_t. layout: @c DEPTH slot fields of @ref SLOT_BITS bits (slots are
-     * @c 0..DEPTH+1, so 3 bits each), then the root-hold flag at @ref ROOT_HOLD_BIT.
+     * @brief encodes which @b slot is placed at each search stage, the level-0 hold flag, and the slot
+     *  sitting in the hold slot after each level's hold decision.
+     * @details packed into two @c uint32_t words. @c _bits layout: @c DEPTH slot fields of @ref SLOT_BITS
+     *  bits (slots are @c 0..DEPTH+1, so 3 bits each), then the root-hold flag at @ref ROOT_HOLD_BIT.
+     *  @c _held layout: @c DEPTH held-slot fields of @ref SLOT_BITS bits, one per level, using @ref
+     *  HELD_NONE for "hold empty".
      */
     class seq_plan {
     public:
@@ -98,9 +133,12 @@ namespace dev {
         static constexpr std::uint32_t SLOT_MASK = (1u << SLOT_BITS) - 1;
         static constexpr std::uint32_t ROOT_HOLD_BIT = DEPTH * SLOT_BITS;
         static constexpr std::uint32_t SLOTS_MASK = (1u << ROOT_HOLD_BIT) - 1;
+        /** sentinel @ref held_slot value: the hold slot is empty. */
+        static constexpr std::uint8_t HELD_NONE = static_cast<std::uint8_t>(SLOT_MASK);
 
-        static_assert(NUM_SLOTS <= (1u << SLOT_BITS), "slot ids must fit a SLOT_BITS field");
+        static_assert(NUM_SLOTS < (1u << SLOT_BITS), "slot ids must leave SLOT_MASK free as the HELD_NONE sentinel");
         static_assert(ROOT_HOLD_BIT < 32, "the packed plan must fit a uint32_t");
+        static_assert(DEPTH * SLOT_BITS <= 32, "the packed held-slot fields must fit a uint32_t");
 
         /** the slot placed at level @p i (@c i < DEPTH). */
         [[nodiscard]] constexpr std::uint8_t slot(std::uint32_t i) const {
@@ -110,6 +148,10 @@ namespace dev {
         [[nodiscard]] constexpr bool rootHold() const { return (_bits >> ROOT_HOLD_BIT) & 1u; }
         /** the raw packed representation. */
         [[nodiscard]] constexpr std::uint32_t bits() const { return _bits; }
+        /** the slot sitting in the hold slot after level @p i's hold decision (@ref HELD_NONE if empty). */
+        [[nodiscard]] constexpr std::uint8_t held_slot(std::uint32_t i) const {
+            return static_cast<std::uint8_t>((_held >> (i * SLOT_BITS)) & SLOT_MASK);
+        }
 
         constexpr void set_slot(std::uint32_t i, std::uint8_t s) {
             _bits &= ~(SLOT_MASK << (i * SLOT_BITS));
@@ -118,10 +160,22 @@ namespace dev {
         constexpr void set_root_hold(bool v) {
             _bits = (_bits & ~(1u << ROOT_HOLD_BIT)) | (static_cast<std::uint32_t>(v) << ROOT_HOLD_BIT);
         }
+        constexpr void set_held_slot(std::uint32_t i, std::uint8_t s) {
+            _held &= ~(SLOT_MASK << (i * SLOT_BITS));
+            _held |= (static_cast<std::uint32_t>(s) & SLOT_MASK) << (i * SLOT_BITS);
+        }
 
     private:
         std::uint32_t _bits = 0;
+        std::uint32_t _held = 0;
     };
+
+} // namespace dev
+
+/** sentinel window-slot id meaning "the hold slot is empty" at some level (mirrors @c dev::seq_plan::HELD_NONE). */
+inline constexpr std::uint8_t HELD_NONE_SLOT = dev::seq_plan::HELD_NONE;
+
+namespace dev {
 
     /** the fixed-capacity set of distinct slot plans for one hold state. */
     struct plan_set {
@@ -134,24 +188,27 @@ namespace dev {
     }
 
     /**
-     * insert @p plan, collapsing identical slot plans.
-     * @details this is the @b only dedup, and it is compile-time and piece-independent: two decision
-     *  vectors that place the same window slots are the same search regardless of which pieces land there.
-     *  it never merges distinct slots that happen to hold equal piece types (e.g. @c held==current) -- that
-     *  redundancy is left in on purpose (an @c argmax over equal-value leaves is a no-op), which keeps the
-     *  per-state @c count a compile-time constant.
+     * @brief insert @p plan, collapsing identical slot plans.
+     * @param[in, out] set to insert to
+     * @param plan to insert
+     * @details the placed-slot path uniquely determines every hold decision, two
+     *  plans agreeing on slot bits MUST agree on @c held_slot too
      */
     constexpr void insert(plan_set& set, seq_plan const& plan) {
-        for(std::uint32_t i = 0; i < set.count; ++i)
-            if(same_slots(set.data[i], plan))
-                return;
+        /* for(std::uint32_t i = 0; i < set.count; ++i)
+             if(same_slots(set.data[i], plan)) {
+                 for(std::uint32_t lvl = 0; lvl < DEPTH; ++lvl)
+                     if(set.data[i].held_slot(lvl) != plan.held_slot(lvl))
+                         throw "seq_plan::insert: held_slot mismatch on identical slot plans";
+                 return;
+             }*/
         set.data[set.count++] = plan;
     }
 
 
     /**
      * simulate every @c 2^DEPTH hold/no-hold decision vector over abstract window slots.
-     * @param held_empty whether the hold slot starts empty (the only identity-independent input)
+     * @param held_empty true if hold cell is empty
      * @details mirrors @ref sim::TetrisEngine: a plain hold swaps current<->held; a hold from an empty
      *  slot stashes current and pulls the next window slot (consuming one extra). references at most window
      *  slot @c DEPTH, so @ref NUM_SLOTS has margin.
@@ -160,14 +217,14 @@ namespace dev {
         plan_set set{};
 
         for(std::uint32_t d = 0; d < (1u << DEPTH); ++d) {
-            std::uint8_t cur = win_slot(0);
-            std::uint8_t hld = HELD_SLOT;
-            bool empty = held_empty;
+            auto cur = win_slot(0);
+            auto hld = SEQ_HELD_SLOT;
+            auto empty = held_empty;
             std::uint32_t k = 1; // next unread window slot (slot 0 is `cur`)
 
             seq_plan plan{};
             for(std::uint32_t i = 0; i < DEPTH; ++i) {
-                bool didHold = false;
+                auto didHold = false;
                 if(d & (1u << i)) {
                     if(empty) {
                         hld = cur; // stash current
@@ -175,7 +232,7 @@ namespace dev {
                         empty = false;
                     }
                     else {
-                        std::uint8_t const tmp = cur; // plain swap, no consumption
+                        auto const tmp = cur; // plain swap, no consumption
                         cur = hld;
                         hld = tmp;
                     }
@@ -185,6 +242,7 @@ namespace dev {
                 plan.set_slot(i, cur);
                 if(i == 0)
                     plan.set_root_hold(didHold);
+                plan.set_held_slot(i, empty ? seq_plan::HELD_NONE : hld);
 
                 if(i + 1 < DEPTH)
                     cur = win_slot(k++); // place consumes cur; pull the next for the following level
@@ -202,41 +260,31 @@ namespace dev {
 
 } // namespace dev
 
-/**
- * enumerate the distinct hold-resolved piece sequences for one move.
- * @param current the piece to place now (window slot 0)
- * @param held    the held piece, or @ref sim::NO_PIECE if the slot is empty
- * @param lookahead the upcoming pieces after @p current, soonest first (@c TetrisEngine::lookahead)
- * @details pure dispatch: select the compile-time slot plan for this hold state, then gather the concrete
- *  pieces into its slots. no per-move hold simulation and no branches; @c count is fixed per hold state.
- *  reads @c lookahead[0..DEPTH-1] (a @ref sim::PIECE_QUEUE_SIZE of 5 has margin).
- */
 constexpr void generate_sequences_into(
     seq_set& set,
     sim::PieceType current,
     sim::PieceType held,
     std::span<sim::PieceType const> lookahead
 ) {
-    dev::plan_set const& plans = dev::PLANS[held == sim::NO_PIECE ? 1 : 0];
+    auto const& plans = dev::PLANS[held == sim::NO_PIECE ? 1 : 0];
 
-    std::array<sim::PieceType, NUM_SLOTS> slot{};
-    slot[HELD_SLOT] = held;
-    slot[win_slot(0)] = current;
+    std::array<sim::PieceType, NUM_SLOTS> sequence{};
+    sequence[SEQ_HELD_SLOT] = held;
+    sequence[win_slot(0)] = current;
     for(std::uint32_t i = 0; i < DEPTH; ++i)
-        slot[win_slot(1 + i)] = lookahead[i];
+        sequence[win_slot(1 + i)] = lookahead[i];
 
     set.count = plans.count;
     for(std::uint32_t j = 0; j < plans.count; ++j) {
-        for(std::uint32_t i = 0; i < DEPTH; ++i)
-            set.data[j].pieces[i] = slot[plans.data[j].slot(i)];
+        for(std::uint32_t i = 0; i < DEPTH; ++i) {
+            set.data[j].pieces[i] = sequence[plans.data[j].slot(i)];
+            set.data[j].heldIsI[i] = plans.data[j].held_slot(i) != dev::seq_plan::HELD_NONE
+                && sequence[plans.data[j].held_slot(i)] == sim::PieceType::I;
+        }
         set.data[j].rootHold = plans.data[j].rootHold();
     }
 }
 
-/**
- * return-by-value convenience wrapper. on the GPU prefer @ref generate_sequences_into to write straight into
- * the block's shared @c seq_set -- returning the ~132-byte aggregate here lands it on the (tiny) device stack.
- */
 [[nodiscard]] constexpr seq_set generate_sequences(
     sim::PieceType current,
     sim::PieceType held,
