@@ -15,8 +15,8 @@ struct net_ref {
     ai::model_t::weights_t w; ///< NUM_PARAMS weights (host array or on-device shared memory)
 
     [[nodiscard]] constexpr ai::search::value_t evaluate(
-        ai::search::clear_t clears, sim::Board2 const& board) const {
-        return static_cast<ai::search::value_t>(ai::model_t::evaluate(clears, board, w));
+        ai::search::clear_t clears, sim::Board2 const& board, bool held_is_i) const {
+        return static_cast<ai::search::value_t>(ai::model_t::evaluate(clears, board, held_is_i, w));
     }
 };
 
