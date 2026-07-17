@@ -31,7 +31,7 @@ namespace {
         }
 
         /** the search seam (@ref search_move / @ref search_move_beam call @c model.evaluate) */
-        constexpr search::value_t evaluate(search::clear_t accum, sim::Board2 const& b) const {
+        constexpr search::value_t evaluate(search::clear_t accum, sim::Board2 const& b, bool /*heldIsI*/) const {
             return (*this)(accum, b);
         }
     };
@@ -40,7 +40,7 @@ namespace {
     constexpr bool placements_decode_in_range() {
         for(std::uint32_t p = 0; p < *sim::PieceType::COUNT; ++p) {
             auto const piece = static_cast<sim::PieceType>(p);
-            auto const total = search::theo_count(piece);
+            auto const total = search::n_theoretical_placements(piece);
             if(total == 0)
                 return false;
 
@@ -57,13 +57,13 @@ namespace {
     static_assert(search::MAX_PLACEMENTS > 0 && search::MAX_PLACEMENTS <= 40);
 
     // --- deduped placement counts are pinned (O's 4 squares -> 1, I/S/Z horizontals+verticals -> 2) ---
-    static_assert(search::theo_count(sim::PieceType::O) == 9);
-    static_assert(search::theo_count(sim::PieceType::I) == 17);
-    static_assert(search::theo_count(sim::PieceType::S) == 17);
-    static_assert(search::theo_count(sim::PieceType::Z) == 17);
-    static_assert(search::theo_count(sim::PieceType::T) == 34);
-    static_assert(search::theo_count(sim::PieceType::J) == 34);
-    static_assert(search::theo_count(sim::PieceType::L) == 34);
+    static_assert(search::n_theoretical_placements(sim::PieceType::O) == 9);
+    static_assert(search::n_theoretical_placements(sim::PieceType::I) == 17);
+    static_assert(search::n_theoretical_placements(sim::PieceType::S) == 17);
+    static_assert(search::n_theoretical_placements(sim::PieceType::Z) == 17);
+    static_assert(search::n_theoretical_placements(sim::PieceType::T) == 34);
+    static_assert(search::n_theoretical_placements(sim::PieceType::J) == 34);
+    static_assert(search::n_theoretical_placements(sim::PieceType::L) == 34);
     static_assert(search::MAX_PLACEMENTS == 34);
 
     // --- hold layer: from-empty commits the first lookahead and flags a root hold -------------------
@@ -114,7 +114,7 @@ namespace {
         };
         auto const set = search::generate_sequences(sim::PieceType::I, sim::PieceType::I, la);
 
-        bool nonHoldRoot = false;
+        auto nonHoldRoot = false;
         for(auto const& s : set) {
             if(s.rootHold && s.pieces[0] != sim::PieceType::I) // a real (non-redundant) hold would differ
                 return false;
@@ -124,6 +124,109 @@ namespace {
         return nonHoldRoot && set.count >= 1;
     }
     static_assert(sequences_identical_hold_is_harmless());
+
+    // --- hold LUT: dev::PLANS' held_slot bookkeeping matches an independent naive replay ------------
+    // (a restatement of the hold state machine, written independently of dev::build_plans, over every
+    // decision vector and both held_empty states -- catches a held_slot regression that same_slots()
+    // dedup by itself would not).
+    constexpr bool held_slot_matches_naive_replay() {
+        for(std::uint32_t he = 0; he < 2; ++he) {
+            auto const heldEmpty = he == 1; // dev::PLANS[1] == empty hold
+            auto const& plans = search::dev::PLANS[he];
+
+            for(std::uint32_t d = 0; d < (1u << search::DEPTH); ++d) {
+                auto cur = search::win_slot(0);
+                auto hld = search::SEQ_HELD_SLOT;
+                auto empty = heldEmpty;
+                std::uint32_t k = 1;
+
+                std::array<std::uint8_t, search::DEPTH> slots{};
+                std::array<std::uint8_t, search::DEPTH> held{};
+
+                for(std::uint32_t i = 0; i < search::DEPTH; ++i) {
+                    if(d & (1u << i)) {
+                        if(empty) {
+                            hld = cur;
+                            cur = search::win_slot(k++);
+                            empty = false;
+                        }
+                        else {
+                            auto const tmp = cur;
+                            cur = hld;
+                            hld = tmp;
+                        }
+                    }
+                    slots[i] = cur;
+                    held[i] = empty ? search::dev::seq_plan::HELD_NONE : hld;
+                    if(i + 1 < search::DEPTH)
+                        cur = search::win_slot(k++);
+                }
+
+                // find the dedup'd plan with this exact slot sequence and check its held_slot fields
+                auto found = false;
+                for(std::uint32_t p = 0; p < plans.count && !found; ++p) {
+                    auto same = true;
+                    for(std::uint32_t i = 0; i < search::DEPTH && same; ++i)
+                        same = plans.data[p].slot(i) == slots[i];
+                    if(!same)
+                        continue;
+                    found = true;
+                    for(std::uint32_t i = 0; i < search::DEPTH; ++i)
+                        if(plans.data[p].held_slot(i) != held[i])
+                            return false;
+                }
+                if(!found)
+                    return false;
+            }
+        }
+        return true;
+    }
+    static_assert(held_slot_matches_naive_replay());
+
+    // --- hold LUT: a plan that never holds keeps the ORIGINAL hold state at every level --------------
+    constexpr bool no_hold_plan_keeps_held_none_from_empty() {
+        auto const& plans = search::dev::PLANS[1]; // held_empty
+        for(std::uint32_t p = 0; p < plans.count; ++p) {
+            auto neverMoves = true;
+            for(std::uint32_t i = 0; i < search::DEPTH && neverMoves; ++i)
+                neverMoves = plans.data[p].slot(i) == search::win_slot(i);
+            if(!neverMoves)
+                continue;
+            for(std::uint32_t i = 0; i < search::DEPTH; ++i)
+                if(plans.data[p].held_slot(i) != search::dev::seq_plan::HELD_NONE)
+                    return false;
+            return true;
+        }
+        return false;
+    }
+    static_assert(no_hold_plan_keeps_held_none_from_empty());
+
+    constexpr bool no_hold_plan_keeps_original_held_slot() {
+        auto const& plans = search::dev::PLANS[0]; // held non-empty
+        for(std::uint32_t p = 0; p < plans.count; ++p) {
+            auto neverMoves = true;
+            for(std::uint32_t i = 0; i < search::DEPTH && neverMoves; ++i)
+                neverMoves = plans.data[p].slot(i) == search::win_slot(i);
+            if(!neverMoves)
+                continue;
+            for(std::uint32_t i = 0; i < search::DEPTH; ++i)
+                if(plans.data[p].held_slot(i) != search::SEQ_HELD_SLOT)
+                    return false;
+            return true;
+        }
+        return false;
+    }
+    static_assert(no_hold_plan_keeps_original_held_slot());
+
+    // --- hold LUT: a root hold from empty stashes the piece that WAS about to be placed (win_slot(0)) ----
+    constexpr bool root_hold_from_empty_stashes_win_slot_0() {
+        auto const& plans = search::dev::PLANS[1]; // held_empty
+        for(std::uint32_t p = 0; p < plans.count; ++p)
+            if(plans.data[p].rootHold() && plans.data[p].held_slot(0) == search::win_slot(0))
+                return true;
+        return false;
+    }
+    static_assert(root_hold_from_empty_stashes_win_slot_0());
 
     // --- work-id mapping: encode/decode is a bijection over every (sequence, i0, i1) prefix ----------
     // (the tiled decomposition is legacy and depth-3 only; see work.hpp)
@@ -166,7 +269,7 @@ SEARCH_TEST(brute, returns_a_legal_move_on_a_fresh_board) {
     height_model const model;
 
     auto const r = search::search_move(game, model);
-    ASSERT_FALSE(r.none);
+    ASSERT_FALSE(r.none());
 
     // replay exactly as the trainer loop would; place() has a legal-placement precondition, so an
     // illegal choice would trip its internal checks / change the outcome
@@ -184,7 +287,7 @@ SEARCH_TEST(brute, plays_a_multi_move_game) {
     std::uint32_t moves = 0;
     for(; moves < 15 && !game.gameOver(); ++moves) {
         auto const r = search::search_move(game, model);
-        if(r.none)
+        if(r.none())
             break;
 
         if(r.move.hold)
@@ -207,8 +310,8 @@ SEARCH_TEST(brute, tiled_matches_reference_over_a_game) {
         auto const ref = search::search_move(game, model);
         auto const tiled = search::search_move_tiled(game, model);
 
-        ASSERT_EQ(ref.none, tiled.none);
-        if(ref.none)
+        ASSERT_EQ(ref.none(), tiled.none());
+        if(ref.none())
             break;
         EXPECT_EQ(ref.move, tiled.move);
         EXPECT_EQ(ref.value, tiled.value);
@@ -228,8 +331,8 @@ SEARCH_TEST(brute, distinct_seeds_are_independent) {
     auto const ra = search::search_move(a, model);
     auto const rb = search::search_move(b, model);
 
-    EXPECT_FALSE(ra.none);
-    EXPECT_FALSE(rb.none);
+    EXPECT_FALSE(ra.none());
+    EXPECT_FALSE(rb.none());
 }
 
 } // namespace ta3::ai

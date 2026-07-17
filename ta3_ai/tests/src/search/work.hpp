@@ -85,8 +85,8 @@ constexpr void build_layout_into(work_layout& w, seq_set const& seqs) {
     while(s + 1 < w.count && w.offset[s + 1] <= id)
         ++s;
 
-    std::uint32_t const local = id - w.offset[s];
-    std::uint32_t const b1 = theo_count(seqs[s].pieces[1]);
+    auto const local = id - w.offset[s];
+    auto const b1 = theo_count(seqs[s].pieces[1]);
     return {s, local / b1, local % b1};
 }
 
@@ -108,16 +108,17 @@ template<class Model, class Consider>
     sim::PieceType p2,
     sim::drop_place_t root,
     std::uint32_t base,
+    bool heldIsI,
     Model const& model,
     Consider const& consider
 ) {
-    bool expanded = false;
+    auto expanded = false;
     for(std::uint32_t i2 = 0; i2 < theo_count(p2); ++i2) {
-        step const s2 = apply(s1.board, s1.accum, nth_placement(p2, i2));
+        auto const s2 = apply(s1.board, s1.accum, nth_placement(p2, i2));
         if(!s2.ok)
             continue;
         expanded = true;
-        consider(model.evaluate(s2.accum, s2.board.canonical()), root, base + i2);
+        consider(model.evaluate(s2.accum, s2.board.canonical(), heldIsI), root, base + i2);
     }
     return expanded;
 }
@@ -152,34 +153,34 @@ constexpr void eval_prefix(
     Model const& model,
     Consider&& consider
 ) {
-    work_prefix const wp = decode_prefix(seqs, w, id);
-    move_seq const& seq = seqs[wp.seq];
+    auto const wp = decode_prefix(seqs, w, id);
+    auto const& seq = seqs[wp.seq];
     auto const [p0, p1, p2] = seq.pieces;
 
-    std::uint32_t const base = id * MAX_PLACEMENTS; // this prefix's leaf ranks: [base, base + theo_count(p2))
+    auto const base = id * MAX_PLACEMENTS; // this prefix's leaf ranks: [base, base + theo_count(p2))
 
     // root: the first piece. an illegal root placement owns no leaves.
-    placement const pl0 = nth_placement(p0, wp.i0);
-    step const s0 = apply(board, {}, pl0);
+    auto const pl0 = nth_placement(p0, wp.i0);
+    auto const s0 = apply(board, {}, pl0);
     if(!s0.ok)
         return;
 
     sim::drop_place_t const root{pl0.orientation, pl0.x, seq.rootHold};
 
     // continuation: the second piece at this prefix's i1.
-    step const s1 = apply(s0.board, s0.accum, nth_placement(p1, wp.i1));
+    auto const s1 = apply(s0.board, s0.accum, nth_placement(p1, wp.i1));
 
     if(s1.ok) {
         // depth-3 leaves; if the last piece never fits, the depth-2 board itself is the leaf.
-        if(!dev::expand_last(s1, p2, root, base, model, consider))
-            consider(model.evaluate(s1.accum, s1.board.canonical()), root, base);
+        if(!dev::expand_last(s1, p2, root, base, seq.heldIsI[2], model, consider))
+            consider(model.evaluate(s1.accum, s1.board.canonical(), seq.heldIsI[1]), root, base);
         return;
     }
 
     // no continuation at this prefix. the depth-1 fallback (legal root, but nothing extends it) is a per-root
     // property, so attribute it once -- from the i1 == 0 prefix -- exactly like search_move's !expanded1 branch.
     if(wp.i1 == 0 && !dev::has_continuation(s0, p1))
-        consider(model.evaluate(s0.accum, s0.board.canonical()), root, base);
+        consider(model.evaluate(s0.accum, s0.board.canonical(), seq.heldIsI[0]), root, base);
 }
 
 /**
@@ -192,9 +193,21 @@ template<class Model>
     if(game.gameOver())
         return {};
 
-    sim::Board2 const& board = game.board();
-    seq_set const seqs = generate_sequences(game.currentPiece(), game.heldPiece(), game.lookahead());
-    work_layout const w = build_layout(seqs);
+    auto const& board = game.board();
+    auto const seqs = generate_sequences(game.currentPiece(), game.heldPiece(), game.lookahead());
+    auto const w = build_layout(seqs);
 
     search_result best;
-    auto const consider = [&](value_t 
+    auto const consider = [&](value_t v, sim::drop_place_t root, std::uint32_t /*order*/) {
+        if(best.none() || v > best.value) // ties: first in order wins (matches the device tie-break)
+            best = {root, v};
+    };
+
+    for(std::uint32_t id = 0; id < prefix_count(w); ++id)
+        eval_prefix(board, seqs, w, id, model, consider);
+
+    return best;
+}
+
+} // namespace ta3::ai::search
+#endif // TA3_SEARCH_DEPTH == 3
