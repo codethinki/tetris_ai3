@@ -14,8 +14,6 @@
 
 
 
-
-
 namespace ta3::ai::metric {
 
 /** @attention TA3_CUDA_CONSTANT: indexed from device code with a runtime value (see @ref ai::CLEAR_BUMP) */
@@ -25,14 +23,16 @@ TA3_CUDA_CONSTANT std::array<int, sim::BLOCKS + 1> CLEAR_SCORE_TABLE{{0, -1, -2,
 constexpr auto board = [][[nodiscard]](sim::Board2 const& board) { return board; };
 
 constexpr auto holes = [][[nodiscard]](sim::Board2 const& board) { return board.holes(); };
-constexpr auto norm_holes = [][[nodiscard]](sim::Board2 const& board) { return static_cast<data_t>(holes(board)) / data_t{20}; };
+constexpr auto norm_holes = [][[nodiscard]](sim::Board2 const& board) {
+    return static_cast<data_t>(holes(board)) / data_t{20};
+};
 
 namespace dev {
     /** bit-plane masks: @c PLANE[b] has bit @c y set iff bit @c b of @c y is set, over the field rows */
     TA3_CUDA_CONSTANT auto HOLE_DEPTH_PLANES = [] {
-        constexpr size_t B = std::bit_width(static_cast<unsigned>(sim::HEIGHT - 1));
-        std::array<uint32_t, B> planes{};
-        for(size_t b = 0; b < B; ++b)
+        constexpr size_t bitWidth = std::bit_width(static_cast<unsigned>(sim::HEIGHT - 1));
+        std::array<uint32_t, bitWidth> planes{};
+        for(size_t b = 0; b < bitWidth; ++b)
             for(uint32_t y = 0; y < sim::HEIGHT; ++y)
                 if((y >> b) & 1u)
                     planes[b] |= uint32_t{1} << y;
@@ -50,15 +50,15 @@ namespace dev {
 
 
 constexpr auto hole_depths = [][[nodiscard]](sim::Board2 const& board) {
-    constexpr size_t H = sim::HEIGHT;
+    constexpr auto h = sim::HEIGHT;
     size_t sum = 0;
     for(size_t x = 0; x < sim::WIDTH; ++x) {
         auto const c = board.raw_column(x);
-        size_t const n = static_cast<size_t>(sim::popcount(c));
-        size_t const s = dev::sum_set_bit_indices(c);
+        auto const n = static_cast<size_t>(sim::popcount(c));
+        auto const s = dev::sum_set_bit_indices(c);
 
-        size_t const pos = (H - 1) * n + n * (n + 1) / 2; // grouped so the subtraction stays >= 0
-        size_t const neg = s + n * n;
+        auto const pos = (h - 1) * n + n * (n + 1) / 2; // grouped so the subtraction stays >= 0
+        auto const neg = s + n * n;
         sum += pos - neg;
     }
     return sum;
@@ -77,7 +77,7 @@ constexpr auto norm_hole_depths = [][[nodiscard]](sim::Board2 const& board) {
         return 0;
     if(std::is_constant_evaluated()) {
         float c = x, p = 0;
-        for(int i = 0; i < 32 && c != p; ++i) {
+        for(auto i = 0; i < 32 && c != p; ++i) {
             p = c;
             c = 0.5f * (c + x / c);
         }
@@ -87,9 +87,9 @@ constexpr auto norm_hole_depths = [][[nodiscard]](sim::Board2 const& board) {
 }
 
 constexpr auto surface_variance = [][[nodiscard]](sim::Board2 const& board) {
-    int sum = 0;
+    auto sum = 0;
     auto prevHeight = board.height(0);
-    for(int x = 1; x < static_cast<int>(sim::WIDTH); ++x) {
+    for(auto x = 1; x < static_cast<int>(sim::WIDTH); ++x) {
         auto const h = board.height(x);
         int const diff = h - std::exchange(prevHeight, h);
         sum += diff * diff;
@@ -101,7 +101,7 @@ constexpr auto norm_surface_var = [][[nodiscard]](sim::Board2 const& board) {
 };
 
 constexpr auto max_height = [][[nodiscard]](sim::Board2 const& board) {
-    size_t max = board.height(0);
+    auto max = board.height(0);
     for(size_t i = 1; i < sim::WIDTH; ++i)
         max = std::max(board.height(i), max);
     return max;
@@ -120,11 +120,11 @@ constexpr auto norm_agg_height = [][[nodiscard]](sim::Board2 const& board) {
 
 /** vertical filled<->empty transitions per column, counting the floor below the field as filled */
 constexpr auto y_transitions = [][[nodiscard]](sim::Board2 const& board) {
-    static constexpr uint32_t FIELD = (uint32_t{1} << sim::HEIGHT) - 1; // field bits [0, HEIGHT)
+    static constexpr auto FIELD = (uint32_t{1} << sim::HEIGHT) - 1; // field bits [0, HEIGHT)
     size_t sum = 0;
     for(size_t x = 0; x < sim::WIDTH; ++x) {
         // set the floor bit at HEIGHT so an empty bottom cell counts as a transition
-        uint32_t const c = board.raw_column(x) | (uint32_t{1} << sim::HEIGHT);
+        auto const c = board.raw_column(x) | (uint32_t{1} << sim::HEIGHT);
         // bit y of (c ^ c>>1) marks a boundary between rows y and y+1; mask to the field
         sum += static_cast<size_t>(sim::popcount((c ^ (c >> 1)) & FIELD));
     }
@@ -146,11 +146,36 @@ constexpr auto bumpiness = [][[nodiscard]](sim::Board2 const& board) {
     return sum;
 };
 
+/**
+ * number of well columns: column @c x is a well if every existing neighbor stands @c WELL_DEPTH or more
+ * above it. edge columns (0 and WIDTH-1) have only one neighbor and are checked against it alone; interior
+ * columns need both neighbors raised. at most 5 columns of 10 can qualify (wells can't be adjacent).
+ */
+constexpr auto wells = [][[nodiscard]](sim::Board2 const& board) {
+    constexpr size_t WELL_DEPTH = 3;
+    size_t count = 0;
+
+    if(board.height(1) >= board.height(0) + WELL_DEPTH)
+        ++count;
+
+    for(size_t x = 1; x < sim::WIDTH - 1; ++x) {
+        auto const h = board.height(x);
+        if(board.height(x - 1) >= h + WELL_DEPTH && board.height(x + 1) >= h + WELL_DEPTH)
+            ++count;
+    }
+
+    if(board.height(sim::WIDTH - 2) >= board.height(sim::WIDTH - 1) + WELL_DEPTH)
+        ++count;
+
+    return count;
+};
+constexpr auto norm_wells = [][[nodiscard]](sim::Board2 const& board) {
+    return static_cast<data_t>(wells(board)) / data_t{5};
+};
+
 }
 
-namespace ta3::ai::metric {
-
-}
+namespace ta3::ai::metric {}
 
 namespace ta3::ai::metric::dev {
 
@@ -217,10 +242,10 @@ namespace ta3::ai::metric::dev {
 
 // the board metrics above are f(board); sum_board_metric feeds MoveMetric(board, lines_cleared),
 // so lift each into a move metric that ignores lines_cleared.
-using agg_max_height_t  = agg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
-using agg_bumpiness_t   = agg_metric<[](sim::Board2 const& b, uint32_t) { return bumpiness(b); }>;
-using avg_max_height_t  = avg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
-using avg_holes_t       = avg_metric<[](sim::Board2 const& b, uint32_t) { return holes(b); }>;
+using agg_max_height_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
+using agg_bumpiness_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return bumpiness(b); }>;
+using avg_max_height_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
+using avg_holes_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return holes(b); }>;
 using avg_hole_depths_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return hole_depths(b); }>;
 
 // total lines cleared over the game -- the move contribution is lines_cleared itself.

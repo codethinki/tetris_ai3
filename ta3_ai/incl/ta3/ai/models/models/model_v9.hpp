@@ -13,11 +13,11 @@
 
 namespace ta3::ai {
 
-constexpr size_t V7_INPUTS = 8;
-constexpr size_t V7_FC1_SIZE = 16, V7_FC2_SIZE = 8, V7_OUT_SIZE = 1;
+constexpr size_t V9_INPUTS = 10;
+constexpr size_t V9_FC1_SIZE = 16, V9_FC2_SIZE = 8, V9_OUT_SIZE = 1;
 
-/** @brief a minimal stats-only value model -- three fc layers over the v7 feature vector */
-class ModelV7 {
+/** @brief the v8 feature vector plus a well-count metric -- three fc layers over the v9 feature vector */
+class ModelV9 {
     enum feature : size_t {
         SURFACE_VARIANCE,
         HOLES,
@@ -27,20 +27,21 @@ class ModelV7 {
         CLEAR_3,
         CLEAR_SCORE,
         AGG_HEIGHT,
+        HELD_I,
+        WELLS,
         FEATURE_COUNT,
     };
-    static_assert(FEATURE_COUNT == V7_INPUTS, "feature layout must match the net input width");
+    static_assert(FEATURE_COUNT == V9_INPUTS, "feature layout must match the net input width");
 
 public:
-    static constexpr size_t INPUTS = V7_INPUTS;
-    static constexpr size_t OUTPUTS = V7_OUT_SIZE;
+    static constexpr size_t INPUTS = V9_INPUTS;
+    static constexpr size_t OUTPUTS = V9_OUT_SIZE;
     static constexpr sim::dvec2 BOUNDS{-2, 2};
 
     // Calculate parameter count at compile time for the flat vector array
-    static constexpr size_t NUM_PARAMS =
-        fc_layer_params(V7_INPUTS, V7_FC1_SIZE)
-        + fc_layer_params(V7_FC1_SIZE, V7_FC2_SIZE)
-        + fc_layer_params(V7_FC2_SIZE, V7_OUT_SIZE);
+    static constexpr size_t NUM_PARAMS = fc_layer_params(V9_INPUTS, V9_FC1_SIZE) +
+        fc_layer_params(V9_FC1_SIZE, V9_FC2_SIZE) +
+        fc_layer_params(V9_FC2_SIZE, V9_OUT_SIZE);
 
     /** @brief a full flat weight buffer (host array or device shared memory), fixed at NUM_PARAMS */
     using weights_t = std::span<ai::data_t const, NUM_PARAMS>;
@@ -55,11 +56,13 @@ public:
     /**
      * @brief encodes the inputs
      * @param clears clears accumulated from the committed board down to @p board
+     * @param held_is_i whether the piece sitting in the hold slot is an I piece
      * @param[out] out exactly @ref INPUTS values to overwrite
      */
     static constexpr void extractInputs(
         ai::clear_hist_t clears,
         sim::Board2 const& board,
+        bool held_is_i,
         std::array<data_t, INPUTS>& out
     ) {
         static_assert(CLEAR_1 == CLEAR_0 + 1 && CLEAR_2 == CLEAR_0 + 2 && CLEAR_3 == CLEAR_0 + 3);
@@ -76,11 +79,13 @@ public:
         out[HOLES] = metric::norm_holes(board);
         out[CLEAR_SCORE] = static_cast<data_t>(rawScore) * CLEAR_SCORE_NORM;
         out[AGG_HEIGHT] = metric::norm_agg_height(board);
+        out[HELD_I] = held_is_i ? data_t{1} : data_t{0};
+        out[WELLS] = metric::norm_wells(board);
     }
 
-    constexpr ModelV7() { init(); }
+    constexpr ModelV9() { init(); }
 
-    constexpr ModelV7(std::span<double const> weights) { loadWeights(weights); }
+    constexpr ModelV9(std::span<double const> weights) { loadWeights(weights); }
 
 
     /** @brief overwrites the net weights in place (no re-allocation), for reuse across evaluations */
@@ -99,17 +104,15 @@ public:
 
     /**
      * evals the board with the weights
-     * @note @p heldIsI is accepted for interface parity with later model versions (e.g. ModelV8) but
-     *  unused here -- ModelV7 does not read the hold slot.
      */
     [[nodiscard]] static constexpr ai::data_t evaluate(
         ai::clear_hist_t clears,
         sim::Board2 const& board,
-        bool /*heldIsI*/,
+        bool held_is_i,
         weights_t w
     ) {
         std::array<ai::data_t, INPUTS> in{};
-        extractInputs(clears, board, in);
+        extractInputs(clears, board, held_is_i, in);
         return forward(in, w)[0];
     }
 
@@ -119,10 +122,10 @@ public:
     [[nodiscard]] constexpr ai::data_t evaluate(
         ai::clear_hist_t clears,
         sim::Board2 const& board,
-        bool
+        bool held_is_i
     ) const {
         std::array<ai::data_t, INPUTS> in{};
-        extractInputs(clears, board, in);
+        extractInputs(clears, board, held_is_i, in);
         return forward(in, weights_t{_weights})[0];
     }
 
@@ -144,34 +147,34 @@ namespace ta3::ai {
 
 
 
-constexpr void ModelV7::init() { _weights.fill(0); }
+constexpr void ModelV9::init() { _weights.fill(0); }
 
-constexpr void ModelV7::loadWeights(std::span<double const> weights) {
+constexpr void ModelV9::loadWeights(std::span<double const> weights) {
     for(size_t i = 0; i < NUM_PARAMS; ++i)
         _weights[i] = static_cast<ai::data_t>(weights[i]);
 }
 
 
 
-constexpr std::array<ai::data_t, ModelV7::OUTPUTS> ModelV7::forward(
+constexpr std::array<ai::data_t, ModelV9::OUTPUTS> ModelV9::forward(
     std::array<ai::data_t, INPUTS> const& input,
     weights_t w
 ) {
     /** @brief per-layer param counts, for slicing the flat weight buffer */
-    constexpr size_t l1Params = fc_layer_params(V7_INPUTS, V7_FC1_SIZE);
-    constexpr size_t l2Params = fc_layer_params(V7_FC1_SIZE, V7_FC2_SIZE);
-    constexpr size_t l3Params = fc_layer_params(V7_FC2_SIZE, V7_OUT_SIZE);
+    constexpr size_t l1Params = fc_layer_params(V9_INPUTS, V9_FC1_SIZE);
+    constexpr size_t l2Params = fc_layer_params(V9_FC1_SIZE, V9_FC2_SIZE);
+    constexpr size_t l3Params = fc_layer_params(V9_FC2_SIZE, V9_OUT_SIZE);
     static_assert(
         l1Params + l2Params + l3Params == NUM_PARAMS,
         "layer slices must cover the flat weight buffer exactly"
     );
 
-    auto const h1 = dense<INPUTS, V7_FC1_SIZE, true>(input, w.subspan<0, l1Params>());
-    auto const h2 = dense<V7_FC1_SIZE, V7_FC2_SIZE, true>(h1, w.subspan<l1Params, l2Params>());
-    return dense<V7_FC2_SIZE, OUTPUTS, false>(h2, w.subspan<l1Params + l2Params, l3Params>());
+    auto const h1 = dense<INPUTS, V9_FC1_SIZE, true>(input, w.subspan<0, l1Params>());
+    auto const h2 = dense<V9_FC1_SIZE, V9_FC2_SIZE, true>(h1, w.subspan<l1Params, l2Params>());
+    return dense<V9_FC2_SIZE, OUTPUTS, false>(h2, w.subspan<l1Params + l2Params, l3Params>());
 }
 
-constexpr std::array<ai::data_t, ModelV7::OUTPUTS> ModelV7::forward(
+constexpr std::array<ai::data_t, ModelV9::OUTPUTS> ModelV9::forward(
     std::array<ai::data_t, INPUTS> const& input
 ) const { return forward(input, weights_t{_weights}); }
 

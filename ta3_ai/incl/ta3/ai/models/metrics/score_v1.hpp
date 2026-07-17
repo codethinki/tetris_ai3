@@ -17,7 +17,7 @@ TA3_CUDA_CONSTANT double PAYOUTS[] = {0.0, 0.2, 0.8, 2.0, 10.0};
  * final game score
  * @param stats the aggregate stat block; a score metric reads it via stats.get(...)
  */
-constexpr auto score_v4 = [][[nodiscard]](auto const& stats) {
+constexpr auto score_v1 = [][[nodiscard]](auto const& stats) {
     double clearBonus = 0;
     auto const histogram = stats.get(metric::total_clears);
     for(size_t k = 1; k < histogram.size(); ++k)
