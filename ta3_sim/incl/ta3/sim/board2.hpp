@@ -55,8 +55,8 @@ public:
 
     /** result of @ref fit: legality at spawn and the drop distance, computed in one board walk */
     struct fit_t {
-        int drop;
-        bool ok;
+        int minDrop;
+        bool legal;
     };
 
     /**
@@ -66,7 +66,7 @@ public:
      * @return @c {drop, ok}; @c drop is meaningful only when @c ok
      * @pre s spans board columns within [0, WIDTH) (by placement-LUT construction)
      */
-    [[nodiscard]] constexpr fit_t fit(piece_shape s) const;
+    [[nodiscard]] constexpr fit_t fit(piece_shape) const;
 
     /**
      * the board with @p s locked in at row @p y -- copy and placement fused into one pass.

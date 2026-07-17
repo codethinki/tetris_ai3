@@ -22,7 +22,7 @@
       "name": "cth-debug-base",
       "hidden": true,
       "cacheVariables": {
-        "cth_ROOT": "${sourceDir}/../cth/out/install/msvc_debug"
+        "cth_ROOT": "E:/cs/code/cpp/repo/cth/out/install/msvc_debug"
       }
     },
     {

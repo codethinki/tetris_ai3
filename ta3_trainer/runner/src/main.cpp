@@ -31,7 +31,7 @@ constexpr size_t MAX_MOVES = 300;
 
 constexpr size_t MAX_BACKUPS = 5;
 
-constexpr auto ALGO = ta3::trn::TrainerAlgo2::CMAES;
+constexpr auto ALGO = ta3::trn::TrainerAlgo2::DD_CMAES;
 
 
 
