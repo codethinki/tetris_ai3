@@ -80,23 +80,28 @@ namespace {
 
     /** stage 0: threads stride the root-slot space and score every legal depth-1 board. */
     __device__ void score_roots(
-        sim::Board2 const& boardS,
-        std::span<sim::PieceType const, search::NUM_SLOTS> slotS,
+        sim::Board2 const& board,
+        std::span<sim::PieceType const, search::NUM_SLOTS> slot_sequence,
         plan_tree const& tree,
         net_ref const& model,
-        std::span<std::uint32_t, ROOT_SLOTS> rootValsS,
+        std::span<std::uint32_t, ROOT_SLOTS> root_value_sequence,
         std::uint32_t t
     ) {
-        for(std::uint32_t slot = t; slot < ROOT_SLOTS; slot += BLOCK) {
-            std::uint32_t const g = slot / MP, i0 = slot % MP;
+        for(std::uint32_t i = t; i < ROOT_SLOTS; i += BLOCK) {
+            auto const g = i / MP, i0 = i % MP;
             if(g >= tree.count[0])
                 continue;
-            auto const p0 = slotS[tree.nodes[0][g].slot];
-            if(i0 >= search::theo_count(p0))
+            auto const& node = tree.nodes[0][g];
+            auto const p0 = slot_sequence[node.slot];
+            if(i0 >= search::theoretical_placement_count(p0))
                 continue;
-            search::step const s0 = search::apply(boardS, {}, search::nth_placement(p0, i0));
-            if(s0.ok)
-                rootValsS[slot] = search::ordered_bits(model.evaluate(s0.accum, s0.board));
+            auto const [nextBoard, nextClearHist, legal] = search::apply(board, {}, search::nth_placement(p0, i0));
+            if(legal) {
+                bool const heldIsI = node.heldSlot == search::HELD_NONE_SLOT
+                                     ? false
+                                     : slot_sequence[node.heldSlot] == sim::PieceType::I;
+                root_value_sequence[i] = search::ordered_bits(model.evaluate(nextClearHist, nextBoard, heldIsI));
+            }
         }
     }
 
@@ -120,10 +125,10 @@ namespace {
     ) {
         if(t < n0) {
             std::uint32_t const g = sel0S[t] / MP;
-            auto const p0 = slotS[tree.nodes[0][g].slot];
-            search::step const s0 = search::apply(boardS, {}, search::nth_placement(p0, sel0S[t] % MP));
-            kBoard[t] = s0.board;
-            kAccum[t] = s0.accum;
+            auto const firstPiece = slotS[tree.nodes[0][g].slot];
+            auto const step = search::apply(boardS, {}, search::nth_placement(firstPiece, sel0S[t] % MP));
+            kBoard[t] = step.nextBoard;
+            kAccum[t] = step.nextClearHist;
             kVal[t] = sel0ValS[t];
             kNode[t] = static_cast<std::uint8_t>(g);
             kRoot[t] = static_cast<std::uint8_t>(t);
@@ -147,6 +152,7 @@ namespace {
         std::span<std::uint8_t, SEG> seg_k,
         std::span<std::uint8_t, SEG> seg_node,
         std::span<sim::PieceType, SEG> seg_piece,
+        std::span<std::uint8_t, SEG> seg_held,
         std::uint32_t& segCountS
     ) {
         std::uint32_t ns = 0;
@@ -154,12 +160,15 @@ namespace {
         for(std::uint32_t k = 0; k < n; ++k) {
             auto const& pnode = tree.nodes[level - 1][kNode[k]];
             for(std::uint32_t c = pnode.childBegin; c < pnode.childEnd; ++c) {
-                auto const p = slotS[tree.nodes[level][c].slot];
+                auto const& cnode = tree.nodes[level][c];
+                auto const p = slotS[cnode.slot];
                 seg_off[ns] = off;
                 seg_k[ns] = static_cast<std::uint8_t>(k);
                 seg_node[ns] = static_cast<std::uint8_t>(c);
                 seg_piece[ns] = p;
-                off = static_cast<std::uint16_t>(off + search::theo_count(p));
+                seg_held[ns] = cnode.heldSlot != search::HELD_NONE_SLOT
+                    && slotS[cnode.heldSlot] == sim::PieceType::I;
+                off = static_cast<std::uint16_t>(off + search::theoretical_placement_count(p));
                 ++ns;
             }
         }
@@ -177,6 +186,7 @@ namespace {
         std::span<std::uint16_t const, SEG + 1> seg_off,
         std::span<std::uint8_t const, SEG> seg_k,
         std::span<sim::PieceType const, SEG> seg_piece,
+        std::span<std::uint8_t const, SEG> seg_held,
         std::uint32_t seg_count,
         std::span<sim::Board2 const, KMAX> kBoard,
         std::span<search::clear_t const, KMAX> kAccum,
@@ -190,14 +200,14 @@ namespace {
         for(std::uint32_t i = t; i < total; i += BLOCK) {
             while(seg_off[j + 1] <= i)
                 ++j;
-            std::uint32_t const k = seg_k[j];
-            search::step const s = search::apply(
+            auto const k = seg_k[j];
+            auto const [nextBoard, nextClearHist, legal] = search::apply(
                 kBoard[k],
                 kAccum[k],
                 search::nth_placement(seg_piece[j], i - seg_off[j])
             );
-            if(s.ok) {
-                midValsS[i] = search::ordered_bits(model.evaluate(s.accum, s.board));
+            if(legal) {
+                midValsS[i] = search::ordered_bits(model.evaluate(nextClearHist, nextBoard, seg_held[j] != 0));
                 if(((hasChildS >> k) & 1u) == 0) // racy pre-check: only ever skips an already-set bit
                     atomicOr(&hasChildS, 1u << k);
             }
@@ -233,13 +243,13 @@ namespace {
             while(seg_off[j + 1] <= idx)
                 ++j;
             std::uint32_t const k = seg_k[j];
-            search::step const s = search::apply(
+            search::step const step = search::apply(
                 kBoard[k],
                 kAccum[k],
                 search::nth_placement(seg_piece[j], idx - seg_off[j])
             );
-            nBoard[t] = s.board;
-            nAccum[t] = s.accum;
+            nBoard[t] = step.nextBoard;
+            nAccum[t] = step.nextClearHist;
             nVal[t] = selMValS[t];
             nNode[t] = seg_node[j];
             nRoot[t] = kRoot[k];
@@ -282,34 +292,40 @@ namespace {
 
             std::uint32_t total = 0;
             for(std::uint32_t li = 0; li < lists; ++li)
-                total += search::theo_count(slotS[tree.nodes[DEPTH - 1][lnode.childBegin + li].slot]);
+                total += search::theoretical_placement_count(slotS[tree.nodes[DEPTH - 1][lnode.childBegin + li].slot]);
 
-            std::uint32_t legal = 0; // bit li: some placement of list li fit
+            std::uint32_t anyLegal = 0; // bit li: some placement of list li fit
+
             for(std::uint32_t idx = lane; idx < total; idx += 32) {
                 // decode (li, i) by walking the (<= MAX_LAST) list counts -- no runtime-indexed array
                 std::uint32_t i = idx, li = 0;
                 sim::PieceType p = slotS[tree.nodes[DEPTH - 1][lnode.childBegin].slot];
-                for(std::uint32_t c = search::theo_count(p); i >= c; c = search::theo_count(p)) {
+                for(std::uint32_t c = search::theoretical_placement_count(p); i >= c; c = search::theoretical_placement_count(p)) {
                     i -= c;
                     p = slotS[tree.nodes[DEPTH - 1][lnode.childBegin + ++li].slot];
                 }
 
-                search::step const s = search::apply(kBoard[j], kAccum[j], search::nth_placement(p, i));
-                if(!s.ok)
+                auto const [nextBoard, nextClearHist, legal] = search::apply(kBoard[j], kAccum[j], search::nth_placement(p, i));
+                if(!legal)
                     continue;
-                legal |= 1u << li;
+                anyLegal |= 1u << li;
+
+                auto const& cnode = tree.nodes[DEPTH - 1][lnode.childBegin + li];
+                bool const heldIsI = cnode.heldSlot == search::HELD_NONE_SLOT
+                                     ? false
+                                     : slotS[cnode.heldSlot] == sim::PieceType::I;
                 consider(
-                    search::ordered_bits(model.evaluate(s.accum, s.board)),
+                    search::ordered_bits(model.evaluate(nextClearHist, nextBoard, heldIsI)),
                     (j * search::MAX_LAST + li) * MP + i
                 );
             }
             // per-list fallback: the piece never fit anywhere -> the frontier board is the leaf.
 #pragma unroll
             for(int o = 16; o > 0; o >>= 1)
-                legal |= __shfl_xor_sync(0xFFFFFFFFu, legal, o);
+                anyLegal |= __shfl_xor_sync(0xFFFFFFFFu, anyLegal, o);
             if(lane == 0)
                 for(std::uint32_t li = 0; li < lists; ++li)
-                    if(((legal >> li) & 1u) == 0)
+                    if(((anyLegal >> li) & 1u) == 0)
                         consider(kVal[j], (j * search::MAX_LAST + li) * MP);
         }
 
@@ -389,6 +405,7 @@ namespace {
         __shared__ std::uint8_t segKS[SEG];
         __shared__ std::uint8_t segNodeS[SEG];
         __shared__ sim::PieceType segPieceS[SEG];
+        __shared__ std::uint8_t segHeldS[SEG]; // per-segment: child's hold slot resolves to an I piece
         __shared__ std::uint32_t segCountS;
 
         __shared__ unsigned long long warpBestS[WARPS];
@@ -474,6 +491,7 @@ namespace {
                         segKS,
                         segNodeS,
                         segPieceS,
+                        segHeldS,
                         segCountS
                     );
                 }
@@ -483,6 +501,7 @@ namespace {
                     segOffS,
                     segKS,
                     segPieceS,
+                    segHeldS,
                     segCountS,
                     kBoardS[cur],
                     kAccumS[cur],
