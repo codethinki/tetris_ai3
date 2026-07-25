@@ -2,6 +2,7 @@
 
 #include "ta3/ai/model_defs.hpp"
 #include "ta3/ai/models/metrics/tetris_stats_v4.hpp"
+#include "ta3/ai/models/metrics/v_board_metrics.hpp"
 #include "ta3/ai/models/models/utility.hpp"
 
 #include <ta3/sim/board2.hpp>
@@ -72,12 +73,21 @@ public:
             out[CLEAR_0 + k] = static_cast<data_t>(n) * CLEAR_COUNT_NORM;
         }
 
-        out[SURFACE_VARIANCE] = metric::norm_surface_var(board);
-        out[HOLES] = metric::norm_holes(board);
-        out[HOLE_DEPTHS] = metric::norm_hole_depths(board);
-        out[MAX_HEIGHT] = metric::max_height(board);
+        // single fused column pass over the board, reading the normalised metrics directly (max_height raw)
+        metric::fuse_v_board_metrics<
+            metric::norm_surface_var_t,
+            metric::norm_holes_t,
+            metric::norm_hole_depths_t,
+            metric::max_height_t,
+            metric::norm_wells_t
+        > const m{board};
+
+        out[SURFACE_VARIANCE] = m.get<metric::norm_surface_var_t>();
+        out[HOLES] = m.get<metric::norm_holes_t>();
+        out[HOLE_DEPTHS] = m.get<metric::norm_hole_depths_t>();
+        out[MAX_HEIGHT] = static_cast<data_t>(m.get<metric::max_height_t>());
         out[HELD_I] = held_is_i ? data_t{1} : data_t{0};
-        out[WELLS] = metric::norm_wells(board);
+        out[WELLS] = m.get<metric::norm_wells_t>();
     }
 
     constexpr ModelV11() { init(); }

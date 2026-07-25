@@ -1,5 +1,6 @@
 #pragma once
 #include "ta3/ai/model.hpp"
+#include "ta3/ai/search/beam.hpp"
 #include "ta3/ai/search/search.hpp"
 
 #include <ta3/sim/board2.hpp>
@@ -11,10 +12,7 @@
 namespace ta3::ai {
 
 /**
- * a single persistent @ref sim::TetrisEngine driven by a value model on the CPU. each @ref step generates
- * this move's depth-@c DEPTH variations, scores them with the model, and commits the best root move -- all
- * through the shared @ref search::search_move core, so it plays identically to the GPU evaluator and to
- * @c ModelEvaluator::eval_host. kept persistent so the game can be observed / rendered move by move.
+ * simulates a tetris game with @ref sim::TetrisEngine on the CPU
  */
 class AiTetris {
 public:
@@ -32,7 +30,7 @@ public:
      * @return rows cleared, or @ref sim::TetrisEngine::DIED on a game-ending move or when no move is legal.
      */
     constexpr size_t step(model_t const& model) {
-        auto const searchResult = search::search_move(_game, model);
+        auto const searchResult = search::search_move_beam(_game, model);
         if(searchResult.none())
             return sim::TetrisEngine::DIED;
 

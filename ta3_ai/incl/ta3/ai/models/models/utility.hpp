@@ -35,8 +35,6 @@ template<size_t In, size_t Out, bool Relu>
 // restrict to avoid register pressure
 #if defined(__CUDA_ARCH__)
 #pragma unroll 4
-#elif defined(__clang__)
-#pragma clang loop unroll_count(4)
 #endif
     for(size_t o = 0; o < Out; ++o) {
         auto v = w[In * Out + o]; // bias, stored after the matrix

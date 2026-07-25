@@ -23,6 +23,8 @@ namespace ta3::ai::metric {
 [[nodiscard]] constexpr float fsqrt(float x) {
     if(x <= 0)
         return 0;
+    // nvcc's front end (CUDA 13.x EDG) does not accept the C++23 `if consteval`; the equivalent
+    // std::is_constant_evaluated() branch is compiler-neutral and identical in behaviour here.
     if(std::is_constant_evaluated()) {
         float c = x, p = 0;
         for(auto i = 0; i < 32 && c != p; ++i) {
@@ -113,11 +115,19 @@ inline constexpr auto board_metric = [](sim::Board2 const& board) {
 };
 
 } // namespace ta3::ai::metric
+namespace ta3::ai::metric {
+/**
+ * norms vboard metrics by a constant factor
+ */
+template<v_board_metric M, data_t N>
+struct norm_vboard_metric_t : M {
+    [[nodiscard]] constexpr data_t get() const { return static_cast<data_t>(M::get()) / static_cast<data_t>(N); }
+};
+}
 
+namespace ta3::ai::metric {
 
-namespace ta3::ai::metric::v {
-
-struct holes : v_board_metric_base {
+struct holes_t : v_board_metric_base {
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) {
         sum += c.board.height(c.x) - static_cast<std::size_t>(sim::popcount(c.board.raw_column(c.x)));
@@ -125,19 +135,21 @@ struct holes : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct agg_height : v_board_metric_base {
+
+
+struct agg_height_t : v_board_metric_base {
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) { sum += c.board.height(c.x); }
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct max_height : v_board_metric_base {
+struct max_height_t : v_board_metric_base {
     std::size_t max = 0;
     constexpr void step(col_ctx const& c) { max = std::max(max, c.board.height(c.x)); }
     [[nodiscard]] constexpr std::size_t get() const { return max; }
 };
 
-struct surface_variance : v_board_metric_base {
+struct surface_variance_t : v_board_metric_base {
     static constexpr auto INVALID = std::numeric_limits<std::size_t>::max();
     std::size_t prevHeight = INVALID;
     int sum = 0;
@@ -152,7 +164,7 @@ struct surface_variance : v_board_metric_base {
     [[nodiscard]] constexpr data_t get() const { return fsqrt(static_cast<float>(sum)); }
 };
 
-struct y_transitions : v_board_metric_base {
+struct y_transitions_t : v_board_metric_base {
     static constexpr std::uint32_t FIELD = (std::uint32_t{1} << sim::HEIGHT) - 1;
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) {
@@ -162,7 +174,7 @@ struct y_transitions : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct hole_depths : v_board_metric_base {
+struct hole_depths_t : v_board_metric_base {
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) {
         constexpr auto h = sim::HEIGHT;
@@ -176,7 +188,7 @@ struct hole_depths : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct bumpiness : v_board_metric_base {
+struct bumpiness_t : v_board_metric_base {
     static constexpr auto INVALID = std::numeric_limits<std::size_t>::max();
     std::size_t prevHeight = INVALID;
     std::size_t sum = 0;
@@ -189,7 +201,7 @@ struct bumpiness : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct wells : v_board_metric_base {
+struct wells_t : v_board_metric_base {
     static constexpr std::size_t WELL_DEPTH = 3;
     std::size_t count = 0;
     constexpr void step(col_ctx const& c) {
@@ -212,18 +224,29 @@ struct wells : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return count; }
 };
 
-} // namespace ta3::ai::metric::v
+using norm_holes_t = norm_vboard_metric_t<holes_t, data_t{20}>;
+using norm_hole_depths_t = norm_vboard_metric_t<hole_depths_t, data_t{200}>;
+using norm_surface_var_t = norm_vboard_metric_t<surface_variance_t, data_t{100}>;
+using norm_agg_height_t = norm_vboard_metric_t<agg_height_t, data_t{200}>;
+using norm_y_transitions_t = norm_vboard_metric_t<y_transitions_t, data_t{40}>;
+using norm_wells_t = norm_vboard_metric_t<wells_t, data_t{5}>;
 
 
-namespace ta3::ai::metric {
+inline constexpr auto holes = board_metric<holes_t>;
+inline constexpr auto agg_height = board_metric<agg_height_t>;
+inline constexpr auto max_height = board_metric<max_height_t>;
+inline constexpr auto surface_variance = board_metric<surface_variance_t>;
+inline constexpr auto y_transitions = board_metric<y_transitions_t>;
+inline constexpr auto hole_depths = board_metric<hole_depths_t>;
+inline constexpr auto bumpiness = board_metric<bumpiness_t>;
+inline constexpr auto wells = board_metric<wells_t>;
 
-inline constexpr auto holes = board_metric<v::holes>;
-inline constexpr auto agg_height = board_metric<v::agg_height>;
-inline constexpr auto max_height = board_metric<v::max_height>;
-inline constexpr auto surface_variance = board_metric<v::surface_variance>;
-inline constexpr auto y_transitions = board_metric<v::y_transitions>;
-inline constexpr auto hole_depths = board_metric<v::hole_depths>;
-inline constexpr auto bumpiness = board_metric<v::bumpiness>;
-inline constexpr auto wells = board_metric<v::wells>;
+// normalised metric callables -- successors of the former metric.hpp norm_* lambdas.
+inline constexpr auto norm_holes = board_metric<norm_holes_t>;
+inline constexpr auto norm_hole_depths = board_metric<norm_hole_depths_t>;
+inline constexpr auto norm_surface_var = board_metric<norm_surface_var_t>;
+inline constexpr auto norm_agg_height = board_metric<norm_agg_height_t>;
+inline constexpr auto norm_y_transitions = board_metric<norm_y_transitions_t>;
+inline constexpr auto norm_wells = board_metric<norm_wells_t>;
 
 } // namespace ta3::ai::metric

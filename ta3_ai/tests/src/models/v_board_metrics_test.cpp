@@ -36,49 +36,49 @@ namespace {
     };
 
     bool board_matches(sim::Board2 const& board) {
-        if(metric::board_metric<metric::v::holes>(board) != metric::holes(board))
+        if(metric::board_metric<metric::holes_t>(board) != metric::holes(board))
             return false;
-        if(metric::board_metric<metric::v::agg_height>(board) != metric::agg_height(board))
+        if(metric::board_metric<metric::agg_height_t>(board) != metric::agg_height(board))
             return false;
-        if(metric::board_metric<metric::v::max_height>(board) != metric::max_height(board))
+        if(metric::board_metric<metric::max_height_t>(board) != metric::max_height(board))
             return false;
-        if(metric::board_metric<metric::v::surface_variance>(board) != metric::surface_variance(board))
+        if(metric::board_metric<metric::surface_variance_t>(board) != metric::surface_variance(board))
             return false;
-        if(metric::board_metric<metric::v::y_transitions>(board) != metric::y_transitions(board))
+        if(metric::board_metric<metric::y_transitions_t>(board) != metric::y_transitions(board))
             return false;
-        if(metric::board_metric<metric::v::hole_depths>(board) != metric::hole_depths(board))
+        if(metric::board_metric<metric::hole_depths_t>(board) != metric::hole_depths(board))
             return false;
-        if(metric::board_metric<metric::v::bumpiness>(board) != metric::bumpiness(board))
+        if(metric::board_metric<metric::bumpiness_t>(board) != metric::bumpiness(board))
             return false;
-        if(metric::board_metric<metric::v::wells>(board) != metric::wells(board))
+        if(metric::board_metric<metric::wells_t>(board) != metric::wells(board))
             return false;
 
         metric::fuse_v_board_metrics<
-            metric::v::holes,
-            metric::v::agg_height,
-            metric::v::max_height,
-            metric::v::surface_variance,
-            metric::v::y_transitions,
-            metric::v::hole_depths,
-            metric::v::bumpiness,
-            metric::v::wells
+            metric::holes_t,
+            metric::agg_height_t,
+            metric::max_height_t,
+            metric::surface_variance_t,
+            metric::y_transitions_t,
+            metric::hole_depths_t,
+            metric::bumpiness_t,
+            metric::wells_t
         > const fused{board};
 
-        if(fused.get(metric::v::holes{}) != metric::board_metric<metric::v::holes>(board))
+        if(fused.get(metric::holes_t{}) != metric::board_metric<metric::holes_t>(board))
             return false;
-        if(fused.get(metric::v::agg_height{}) != metric::board_metric<metric::v::agg_height>(board))
+        if(fused.get(metric::agg_height_t{}) != metric::board_metric<metric::agg_height_t>(board))
             return false;
-        if(fused.get(metric::v::max_height{}) != metric::board_metric<metric::v::max_height>(board))
+        if(fused.get(metric::max_height_t{}) != metric::board_metric<metric::max_height_t>(board))
             return false;
-        if(fused.get(metric::v::surface_variance{}) != metric::board_metric<metric::v::surface_variance>(board))
+        if(fused.get(metric::surface_variance_t{}) != metric::board_metric<metric::surface_variance_t>(board))
             return false;
-        if(fused.get(metric::v::y_transitions{}) != metric::board_metric<metric::v::y_transitions>(board))
+        if(fused.get(metric::y_transitions_t{}) != metric::board_metric<metric::y_transitions_t>(board))
             return false;
-        if(fused.get(metric::v::hole_depths{}) != metric::board_metric<metric::v::hole_depths>(board))
+        if(fused.get(metric::hole_depths_t{}) != metric::board_metric<metric::hole_depths_t>(board))
             return false;
-        if(fused.get(metric::v::bumpiness{}) != metric::board_metric<metric::v::bumpiness>(board))
+        if(fused.get(metric::bumpiness_t{}) != metric::board_metric<metric::bumpiness_t>(board))
             return false;
-        if(fused.get(metric::v::wells{}) != metric::board_metric<metric::v::wells>(board))
+        if(fused.get(metric::wells_t{}) != metric::board_metric<metric::wells_t>(board))
             return false;
 
         return true;

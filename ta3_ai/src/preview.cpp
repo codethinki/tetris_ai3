@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <cth/chrono.hpp>
+#include <cth/io/log.hpp>
 
 namespace ta3::ai {
 namespace stdchr = std::chrono;
@@ -66,7 +67,7 @@ void AiPreview::startRenderer() {
                 auto zip = std::views::zip(games, boards, models);
 
                 std::for_each(
-                    std::execution::par_unseq,
+                    std::execution::par,
                     zip.begin(),
                     zip.end(),
                     [&rd, &rdMtx](auto const& tuple) {
@@ -84,6 +85,7 @@ void AiPreview::startRenderer() {
                 _renderer->update(boards);
                 auto const frameEnd = stdchr::high_resolution_clock::now();
                 auto const frameTime = stdchr::duration_cast<stdchr::milliseconds>(frameEnd - frameStart);
+
 
                 if(auto const sleep = MOVE_DELAY - frameTime; sleep > std::chrono::milliseconds{0})
                     std::this_thread::sleep_for(sleep);
