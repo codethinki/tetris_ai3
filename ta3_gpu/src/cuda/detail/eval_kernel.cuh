@@ -12,14 +12,25 @@
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <type_traits>
 
 /**
  * @file eval_kernel.cuh
- * @brief the beamed search kernel: one block per (model, game), depth-agnostic cooperative stages per move.
-*/
+ * @brief the beamed search kernel: one CUDA block per (model, game), depth-agnostic cooperative stages
+ *  per move.
+ * @details structural twin of the SYCL kernel in ../../sycl/detail/eval_kernel.hpp -- same stages, same
+ *  function boundaries, same names -- so the two stay diffable; only the mechanics differ (@c __shared__
+ *  + @c __syncthreads() + warp shuffles here, one @c local_accessor + @c group_barrier + sub-group
+ *  primitives there, where the width is never assumed to be 32). one @c __shared__ @ref BlockState
+ *  replaces a pile of individual @c __shared__ variables. parameters that alias this block-local storage
+ *  carry a @c block_ prefix (the SYCL file's @c wgroup_), to set them apart from genuinely per-thread
+ *  values (@c t, @c g, @c lane, ...) in the same signature. all function parameters use all_lower
+ *  snake_case; locals (including struct members) use camelCase. loop variables follow @c i / @c j / @c k
+ *  by nesting depth, or an @c <expressiveName>Idx when a bare letter would lose meaning.
+ */
 namespace ta3::gpu {
 namespace {
 
@@ -32,148 +43,197 @@ namespace {
     constexpr std::uint32_t WARPS = BLOCK / 32;
 
     constexpr std::uint32_t DEPTH = search::DEPTH;
-    // scalar folds of the per-level widths (search::BEAM_WIDTHS); the runtime-indexed access in the
-    // middle-stage loop reads search::BEAM_WIDTHS itself, which is TA3_CUDA_CONSTANT for exactly that.
-    constexpr std::uint32_t K1 = search::BEAM_WIDTHS[0];
-    constexpr std::uint32_t KMAX = search::max_width(search::BEAM_WIDTHS);
+    // compile-time folds of the per-level widths only. the runtime-indexed access in the middle-stage
+    // loop deliberately reads search::BEAM_WIDTHS itself, which is TA3_CUDA_CONSTANT for exactly that --
+    // indexing this constexpr copy with a runtime level would materialise it into local memory.
+    constexpr search::beam_widths_t KS = search::BEAM_WIDTHS; // per-level widths; KS[0] = roots
+    constexpr std::uint32_t K1 = KS[0];
+    constexpr std::uint32_t KMAX = search::max_width(KS);
     constexpr std::uint32_t ROOT_SLOTS = search::ROOT_SLOTS;
-    constexpr std::uint32_t MID_SLOTS = search::mid_slots(search::BEAM_WIDTHS);
-    constexpr std::uint32_t LEAF_ORDERS = search::leaf_orders(search::last_width(search::BEAM_WIDTHS));
-    constexpr std::uint32_t SPAN = search::order_span(search::BEAM_WIDTHS);
+    constexpr std::uint32_t MID_SLOTS = search::mid_slots(KS);
+    constexpr std::uint32_t LEAF_ORDERS = search::leaf_orders(search::last_width(KS));
+    constexpr std::uint32_t SPAN = search::order_span(KS);
     constexpr std::uint32_t MP = search::MAX_PLACEMENTS;
 
     /** middle-stage segment capacity: one segment per (kept frontier node, child). */
-    constexpr std::uint32_t SEG = KMAX * search::MAX_CHILD_MID;
+    constexpr std::uint32_t SEGMENT_CAP = KMAX * search::MAX_CHILD_MID;
 
     static_assert(KMAX <= 32, "the fallback mask and the frontier caches assume ranks fit one 32-bit mask");
     static_assert(KMAX <= BLOCK, "frontier caching runs one thread per kept node");
     static_assert(search::MAX_LAST <= 32, "the leaf-stage legality mask assumes the last-piece lists fit one u32");
-    static_assert(SEG * MP <= 0xFFFFu, "segment offsets are u16");
+    static_assert(SEGMENT_CAP * MP <= 0xFFFFu, "segment offsets are u16");
     static_assert(std::is_trivially_copyable_v<sim::TetrisEngine>, "engine must be blittable to the device");
+
+    /** every per-block scratch variable, gathered into one struct for a single @c __shared__ allocation.
+     *  @c warpBest is sized to the warp count, not the block -- see block_reduce.cuh (the SYCL twin sizes
+     *  it to the full work-group because sub-group width is a runtime property there). */
+    struct BlockState {
+        std::array<ai::data_t, ai::model_t::NUM_PARAMS> weights;
+        sim::Board2 board; // the committed board
+        std::array<sim::PieceType, search::NUM_SLOTS> slot; // pieces per abstract window slot
+        std::uint32_t treeIdx; // which PLAN_TREE (held empty?)
+
+        std::array<std::uint32_t, ROOT_SLOTS> rootScores;
+        std::array<std::uint32_t, MID_SLOTS> midScores;
+        std::array<std::uint32_t, K1> selectedRoot, selectedRootScore;
+        std::array<std::uint32_t, KMAX> selectedMid;
+        std::array<std::uint32_t, KMAX> selectedMidScore;
+
+        // the kept frontier, ping-ponged level to level: board, clear history, score, tree node, root rank.
+        std::array<std::array<sim::Board2, KMAX>, 2> beamBoards;
+        std::array<std::array<search::clear_t, KMAX>, 2> beamClearHists;
+        std::array<std::array<std::uint32_t, KMAX>, 2> beamScores;
+        std::array<std::array<std::uint8_t, KMAX>, 2> beamNodes;
+        std::array<std::array<std::uint8_t, KMAX>, 2> beamRoots;
+        std::uint32_t hasChild; // bit i: beam slot i has a legal continuation
+
+        // middle-stage compaction: segment table over the frontier's real child x placement spans
+        // -- see build_mid_segments / cache_kept_mid.
+        std::array<std::uint16_t, SEGMENT_CAP + 1> segmentOffset;
+        std::array<std::uint8_t, SEGMENT_CAP> segmentBeamIdx;
+        std::array<std::uint8_t, SEGMENT_CAP> segmentNode;
+        std::array<sim::PieceType, SEGMENT_CAP> segmentPiece;
+        std::array<std::uint8_t, SEGMENT_CAP> segmentHeld; // per-segment: child's hold slot resolves to an I piece
+        std::uint32_t segmentCount;
+
+        std::array<unsigned long long, WARPS> warpBest;
+        int over;
+    };
 
     /**
      * per-move staging: thread 0 refreshes the committed board / held piece / plan tree and gathers the
-     * concrete pieces per abstract window slot; every thread zeroes its stride of the root-value array so
+     * concrete pieces per abstract window slot; every thread zeroes its stride of the root-score array so
      * stale scores from the previous move (or previous game, for slots the current tree doesn't use) never
-     * leak into this move's selection. (the middle-stage value array is zeroed per level instead.)
+     * leak into this move's selection. (the middle-stage score array is zeroed per level instead.)
      */
     __device__ void reset_move_state(
         sim::TetrisEngine* __restrict__ games,
         std::uint32_t g,
-        sim::Board2& boardS,
-        std::uint32_t& treeIdxS,
-        std::span<sim::PieceType, search::NUM_SLOTS> slotS,
-        std::span<std::uint32_t, ROOT_SLOTS> rootValsS,
+        sim::Board2& block_board,
+        std::uint32_t& block_tree_idx,
+        std::span<sim::PieceType, search::NUM_SLOTS> block_slot,
+        std::span<std::uint32_t, ROOT_SLOTS> block_root_scores,
         std::uint32_t t
     ) {
         if(t == 0) {
-            boardS = games[g].board();
+            block_board = games[g].board();
             auto const held = games[g].heldPiece();
-            treeIdxS = held == sim::TetrisEngine::NO_PIECE ? 1u : 0u;
+            block_tree_idx = held == sim::TetrisEngine::NO_PIECE ? 1u : 0u;
             auto const gathered = search::gather_slots(games[g].currentPiece(), held, games[g].lookahead());
             for(std::uint32_t i = 0; i < search::NUM_SLOTS; ++i)
-                slotS[i] = gathered[i];
+                block_slot[i] = gathered[i];
         }
         for(std::uint32_t i = t; i < ROOT_SLOTS; i += BLOCK)
-            rootValsS[i] = 0;
+            block_root_scores[i] = 0;
     }
 
     /** stage 0: threads stride the root-slot space and score every legal depth-1 board. */
     __device__ void score_roots(
-        sim::Board2 const& board,
-        std::span<sim::PieceType const, search::NUM_SLOTS> slot_sequence,
+        sim::Board2 const& block_board,
+        std::span<sim::PieceType const, search::NUM_SLOTS> block_slot,
         plan_tree const& tree,
         net_ref const& model,
-        std::span<std::uint32_t, ROOT_SLOTS> root_value_sequence,
+        std::span<std::uint32_t, ROOT_SLOTS> block_root_scores,
         std::uint32_t t
     ) {
-        for(std::uint32_t i = t; i < ROOT_SLOTS; i += BLOCK) {
-            auto const g = i / MP, i0 = i % MP;
+        for(std::uint32_t slotIdx = t; slotIdx < ROOT_SLOTS; slotIdx += BLOCK) {
+            auto const g = slotIdx / MP;
+            auto const rootPlacementIdx = slotIdx % MP;
             if(g >= tree.count[0])
                 continue;
             auto const& node = tree.nodes[0][g];
-            auto const p0 = slot_sequence[node.slot];
-            if(i0 >= search::theoretical_placement_count(p0))
+            auto const rootPiece = block_slot[node.slot];
+            if(rootPlacementIdx >= search::n_theoretical_placements(rootPiece))
                 continue;
-            auto const [nextBoard, nextClearHist, legal] = search::apply(board, {}, search::nth_placement(p0, i0));
+            auto const [nextBoard, nextClearHist, legal] = search::apply(
+                block_board,
+                {},
+                search::nth_placement(rootPiece, rootPlacementIdx)
+            );
             if(legal) {
-                bool const heldIsI = node.heldSlot == search::HELD_NONE_SLOT
+                auto const heldIsI = node.heldSlot == search::HELD_NONE_SLOT
                                      ? false
-                                     : slot_sequence[node.heldSlot] == sim::PieceType::I;
-                root_value_sequence[i] = search::ordered_bits(model.evaluate(nextClearHist, nextBoard, heldIsI));
+                                     : block_slot[node.heldSlot] == sim::PieceType::I;
+                block_root_scores[slotIdx] = search::ordered_bits(
+                    model.evaluate(nextClearHist, nextBoard, heldIsI)
+                );
             }
         }
     }
 
     /**
      * seed the kept frontier from the selected roots (one cheap re-apply beats storing all of stage 0):
-     * board, accum, value, tree node index and root rank per kept root, into frontier row 0.
+     * board, clear history, score, tree node index and root rank per kept root, into frontier row 0.
      */
     __device__ void cache_kept_roots(
-        sim::Board2 const& boardS,
-        std::span<sim::PieceType const, search::NUM_SLOTS> slotS,
+        sim::Board2 const& block_board,
+        std::span<sim::PieceType const, search::NUM_SLOTS> block_slot,
         plan_tree const& tree,
-        std::span<std::uint32_t const, K1> sel0S,
-        std::span<std::uint32_t const, K1> sel0ValS,
-        std::uint32_t n0,
-        std::span<sim::Board2, KMAX> kBoard,
-        std::span<search::clear_t, KMAX> kAccum,
-        std::span<std::uint32_t, KMAX> kVal,
-        std::span<std::uint8_t, KMAX> kNode,
-        std::span<std::uint8_t, KMAX> kRoot,
+        std::span<std::uint32_t const, K1> block_selected_root,
+        std::span<std::uint32_t const, K1> block_selected_root_score,
+        std::uint32_t root_count,
+        std::span<sim::Board2, KMAX> block_beam_boards,
+        std::span<search::clear_t, KMAX> block_beam_clear_hists,
+        std::span<std::uint32_t, KMAX> block_beam_scores,
+        std::span<std::uint8_t, KMAX> block_beam_nodes,
+        std::span<std::uint8_t, KMAX> block_beam_roots,
         std::uint32_t t
     ) {
-        if(t < n0) {
-            std::uint32_t const g = sel0S[t] / MP;
-            auto const firstPiece = slotS[tree.nodes[0][g].slot];
-            auto const step = search::apply(boardS, {}, search::nth_placement(firstPiece, sel0S[t] % MP));
-            kBoard[t] = step.nextBoard;
-            kAccum[t] = step.nextClearHist;
-            kVal[t] = sel0ValS[t];
-            kNode[t] = static_cast<std::uint8_t>(g);
-            kRoot[t] = static_cast<std::uint8_t>(t);
+        if(t < root_count) {
+            auto const g = block_selected_root[t] / MP;
+            auto const rootPiece = block_slot[tree.nodes[0][g].slot];
+            auto const rootStep = search::apply(
+                block_board,
+                {},
+                search::nth_placement(rootPiece, block_selected_root[t] % MP)
+            );
+            block_beam_boards[t] = rootStep.nextBoard;
+            block_beam_clear_hists[t] = rootStep.nextClearHist;
+            block_beam_scores[t] = block_selected_root_score[t];
+            block_beam_nodes[t] = static_cast<std::uint8_t>(g);
+            block_beam_roots[t] = static_cast<std::uint8_t>(t);
         }
     }
 
     /**
-     * build one middle level's segment table: one segment per (kept frontier node k, child c), spanning
-     * that child piece's REAL theoretical placement count. compacted work ids enumerate (k, c, i)
-     * lexicographically -- order-isomorphic to the host's padded slot ids, so the later top-K selection
-     * (max value, lowest id on ties) picks the identical sequence. thread 0 only (<= SEG trivial
-     * iterations, once per level); the caller owes the barrier.
+     * build one middle level's segment table: one segment per (kept frontier node, child), spanning
+     * that child piece's REAL theoretical placement count. compacted work ids enumerate (beam index,
+     * child index, placement index) lexicographically -- order-isomorphic to the host's padded slot
+     * ids, so the later top-K selection (max score, lowest id on ties) picks the identical sequence.
+     * thread 0 only (<= SEGMENT_CAP trivial iterations, once per level); the caller owes the barrier.
      */
     __device__ void build_mid_segments(
-        std::span<sim::PieceType const, search::NUM_SLOTS> slotS,
+        std::span<sim::PieceType const, search::NUM_SLOTS> block_slot,
         plan_tree const& tree,
         std::uint32_t level,
-        std::span<std::uint8_t const, KMAX> kNode,
-        std::uint32_t n,
-        std::span<std::uint16_t, SEG + 1> seg_off,
-        std::span<std::uint8_t, SEG> seg_k,
-        std::span<std::uint8_t, SEG> seg_node,
-        std::span<sim::PieceType, SEG> seg_piece,
-        std::span<std::uint8_t, SEG> seg_held,
-        std::uint32_t& segCountS
+        std::span<std::uint8_t const, KMAX> block_beam_nodes,
+        std::uint32_t beam_width,
+        std::span<std::uint16_t, SEGMENT_CAP + 1> block_segment_offset,
+        std::span<std::uint8_t, SEGMENT_CAP> block_segment_beam_idx,
+        std::span<std::uint8_t, SEGMENT_CAP> block_segment_node,
+        std::span<sim::PieceType, SEGMENT_CAP> block_segment_piece,
+        std::span<std::uint8_t, SEGMENT_CAP> block_segment_held,
+        std::uint32_t& block_segment_count
     ) {
         std::uint32_t ns = 0;
         std::uint16_t off = 0;
-        for(std::uint32_t k = 0; k < n; ++k) {
-            auto const& pnode = tree.nodes[level - 1][kNode[k]];
-            for(std::uint32_t c = pnode.childBegin; c < pnode.childEnd; ++c) {
-                auto const& cnode = tree.nodes[level][c];
-                auto const p = slotS[cnode.slot];
-                seg_off[ns] = off;
-                seg_k[ns] = static_cast<std::uint8_t>(k);
-                seg_node[ns] = static_cast<std::uint8_t>(c);
-                seg_piece[ns] = p;
-                seg_held[ns] = cnode.heldSlot != search::HELD_NONE_SLOT
-                    && slotS[cnode.heldSlot] == sim::PieceType::I;
-                off = static_cast<std::uint16_t>(off + search::theoretical_placement_count(p));
+        for(std::uint32_t i = 0; i < beam_width; ++i) {
+            auto const& pnode = tree.nodes[level - 1][block_beam_nodes[i]];
+            for(std::uint32_t j = pnode.childBegin; j < pnode.childEnd; ++j) {
+                auto const& cnode = tree.nodes[level][j];
+                auto const p = block_slot[cnode.slot];
+                block_segment_offset[ns] = off;
+                block_segment_beam_idx[ns] = static_cast<std::uint8_t>(i);
+                block_segment_node[ns] = static_cast<std::uint8_t>(j);
+                block_segment_piece[ns] = p;
+                block_segment_held[ns] = cnode.heldSlot != search::HELD_NONE_SLOT
+                    && block_slot[cnode.heldSlot] == sim::PieceType::I;
+                off = static_cast<std::uint16_t>(off + search::n_theoretical_placements(p));
                 ++ns;
             }
         }
-        seg_off[ns] = off;
-        segCountS = ns;
+        block_segment_offset[ns] = off;
+        block_segment_count = ns;
     }
 
     /**
@@ -183,33 +243,38 @@ namespace {
      * the decode costs O(segments) over the whole loop, not per item.
      */
     __device__ void score_mid(
-        std::span<std::uint16_t const, SEG + 1> seg_off,
-        std::span<std::uint8_t const, SEG> seg_k,
-        std::span<sim::PieceType const, SEG> seg_piece,
-        std::span<std::uint8_t const, SEG> seg_held,
-        std::uint32_t seg_count,
-        std::span<sim::Board2 const, KMAX> kBoard,
-        std::span<search::clear_t const, KMAX> kAccum,
+        std::span<std::uint16_t const, SEGMENT_CAP + 1> block_segment_offset,
+        std::span<std::uint8_t const, SEGMENT_CAP> block_segment_beam_idx,
+        std::span<sim::PieceType const, SEGMENT_CAP> block_segment_piece,
+        std::span<std::uint8_t const, SEGMENT_CAP> block_segment_held,
+        std::uint32_t segment_count,
+        std::span<sim::Board2 const, KMAX> block_beam_boards,
+        std::span<search::clear_t const, KMAX> block_beam_clear_hists,
         net_ref const& model,
-        std::span<std::uint32_t, MID_SLOTS> midValsS,
-        std::uint32_t& hasChildS,
+        std::span<std::uint32_t, MID_SLOTS> block_mid_scores,
+        std::uint32_t& block_has_child,
         std::uint32_t t
     ) {
-        std::uint32_t const total = seg_off[seg_count];
+        // segmentOffset is u16 (packed, see SEGMENT_CAP's static_assert); widened to u32 on purpose so the
+        // stride comparison against BLOCK-stepped `i` below never narrows.
+        std::uint32_t const total = block_segment_offset[segment_count];
         std::uint32_t j = 0;
         for(std::uint32_t i = t; i < total; i += BLOCK) {
-            while(seg_off[j + 1] <= i)
+            while(block_segment_offset[j + 1] <= i)
                 ++j;
-            auto const k = seg_k[j];
-            auto const [nextBoard, nextClearHist, legal] = search::apply(
-                kBoard[k],
-                kAccum[k],
-                search::nth_placement(seg_piece[j], i - seg_off[j])
+            // segmentBeamIdx is u8; widened to u32 on purpose to index the u32-addressed beam arrays below.
+            std::uint32_t const beamIdx = block_segment_beam_idx[j];
+            auto const s = search::apply(
+                block_beam_boards[beamIdx],
+                block_beam_clear_hists[beamIdx],
+                search::nth_placement(block_segment_piece[j], i - block_segment_offset[j])
             );
-            if(legal) {
-                midValsS[i] = search::ordered_bits(model.evaluate(nextClearHist, nextBoard, seg_held[j] != 0));
-                if(((hasChildS >> k) & 1u) == 0) // racy pre-check: only ever skips an already-set bit
-                    atomicOr(&hasChildS, 1u << k);
+            if(s.legal) {
+                block_mid_scores[i] = search::ordered_bits(
+                    model.evaluate(s.nextClearHist, s.nextBoard, block_segment_held[j] != 0)
+                );
+                if(((block_has_child >> beamIdx) & 1u) == 0) // racy pre-check: only ever skips an already-set bit
+                    atomicOr(&block_has_child, 1u << beamIdx);
             }
         }
     }
@@ -220,63 +285,65 @@ namespace {
      * root rank forward so the final decode never needs per-level history.
      */
     __device__ void cache_kept_mid(
-        std::span<std::uint16_t const, SEG + 1> seg_off,
-        std::span<std::uint8_t const, SEG> seg_k,
-        std::span<std::uint8_t const, SEG> seg_node,
-        std::span<sim::PieceType const, SEG> seg_piece,
-        std::span<std::uint32_t const, KMAX> selMS,
-        std::span<std::uint32_t const, KMAX> selMValS,
-        std::uint32_t nNext,
-        std::span<sim::Board2 const, KMAX> kBoard,
-        std::span<search::clear_t const, KMAX> kAccum,
-        std::span<std::uint8_t const, KMAX> kRoot,
-        std::span<sim::Board2, KMAX> nBoard,
-        std::span<search::clear_t, KMAX> nAccum,
-        std::span<std::uint32_t, KMAX> nVal,
-        std::span<std::uint8_t, KMAX> nNode,
-        std::span<std::uint8_t, KMAX> nRoot,
+        std::span<std::uint16_t const, SEGMENT_CAP + 1> block_segment_offset,
+        std::span<std::uint8_t const, SEGMENT_CAP> block_segment_beam_idx,
+        std::span<std::uint8_t const, SEGMENT_CAP> block_segment_node,
+        std::span<sim::PieceType const, SEGMENT_CAP> block_segment_piece,
+        std::span<std::uint32_t const, KMAX> block_selected_mid,
+        std::span<std::uint32_t const, KMAX> block_selected_mid_score,
+        std::uint32_t n_next,
+        std::span<sim::Board2 const, KMAX> block_beam_boards,
+        std::span<search::clear_t const, KMAX> block_beam_clear_hists,
+        std::span<std::uint8_t const, KMAX> block_beam_roots,
+        std::span<sim::Board2, KMAX> block_next_beam_boards,
+        std::span<search::clear_t, KMAX> block_next_beam_clear_hists,
+        std::span<std::uint32_t, KMAX> block_next_beam_scores,
+        std::span<std::uint8_t, KMAX> block_next_beam_nodes,
+        std::span<std::uint8_t, KMAX> block_next_beam_roots,
         std::uint32_t t
     ) {
-        if(t < nNext) {
-            std::uint32_t const idx = selMS[t];
-            std::uint32_t j = 0;
-            while(seg_off[j + 1] <= idx)
-                ++j;
-            std::uint32_t const k = seg_k[j];
-            search::step const step = search::apply(
-                kBoard[k],
-                kAccum[k],
-                search::nth_placement(seg_piece[j], idx - seg_off[j])
-            );
-            nBoard[t] = step.nextBoard;
-            nAccum[t] = step.nextClearHist;
-            nVal[t] = selMValS[t];
-            nNode[t] = seg_node[j];
-            nRoot[t] = kRoot[k];
-        }
+        if(t >= n_next)
+            return;
+
+        auto const idx = block_selected_mid[t];
+        std::uint32_t i = 0;
+        while(block_segment_offset[i + 1] <= idx)
+            ++i;
+        // segmentBeamIdx is u8; widened to u32 on purpose to index the u32-addressed beam arrays below.
+        std::uint32_t const beamIdx = block_segment_beam_idx[i];
+        auto const s = search::apply(
+            block_beam_boards[beamIdx],
+            block_beam_clear_hists[beamIdx],
+            search::nth_placement(block_segment_piece[i], idx - block_segment_offset[i])
+        );
+        block_next_beam_boards[t] = s.nextBoard;
+        block_next_beam_clear_hists[t] = s.nextClearHist;
+        block_next_beam_scores[t] = block_selected_mid_score[t];
+        block_next_beam_nodes[t] = block_segment_node[i];
+        block_next_beam_roots[t] = block_beam_roots[beamIdx];
     }
 
     /**
      * leaf stage: one warp per kept frontier node expands the last piece. the (list, placement) pairs are
      * FLATTENED: lanes stride the node's total placement count across all last-piece lists, so a
      * 17-placement list no longer leaves half the warp idle before the next list starts. leaves (plus the
-     * per-list fallbacks) fold into the per-thread packed (value | order) maxima -- seeded with @p best,
+     * per-list fallbacks) fold into the per-thread packed (score | order) maxima -- seeded with @p best,
      * which already carries any mid-level fallbacks this thread emitted -- combined by ONE block
      * reduction. the per-list fallback ("this list's piece never fit") comes from a warp-wide legality
      * bitmask (bit per list, shuffle-OR across lanes), identical semantics to the host's per-list
-     * @c !expanded branch. returns the winning packed key (never 0 whenever n0 > 0).
+     * @c !expanded branch. returns the winning packed key (never 0 whenever rootCount > 0).
      */
-    __device__ unsigned long long expand_leaves_and_reduce(
-        std::span<sim::PieceType const, search::NUM_SLOTS> slotS,
+    [[nodiscard]] __device__ unsigned long long expand_leaves_and_reduce(
+        std::span<sim::PieceType const, search::NUM_SLOTS> block_slot,
         plan_tree const& tree,
-        std::span<sim::Board2 const, KMAX> kBoard,
-        std::span<search::clear_t const, KMAX> kAccum,
-        std::span<std::uint32_t const, KMAX> kVal,
-        std::span<std::uint8_t const, KMAX> kNode,
-        std::uint32_t n,
+        std::span<sim::Board2 const, KMAX> block_beam_boards,
+        std::span<search::clear_t const, KMAX> block_beam_clear_hists,
+        std::span<std::uint32_t const, KMAX> block_beam_scores,
+        std::span<std::uint8_t const, KMAX> block_beam_nodes,
+        std::uint32_t beam_width,
         net_ref const& model,
         unsigned long long best,
-        std::span<unsigned long long, WARPS> warpBestS,
+        std::span<unsigned long long, WARPS> block_warp_best,
         std::uint32_t t,
         std::uint32_t lane,
         std::uint32_t wid
@@ -286,84 +353,268 @@ namespace {
             best = key > best ? key : best;
         };
 
-        for(std::uint32_t j = wid; j < n; j += WARPS) { // warp per kept node, lanes over flat placements
-            auto const& lnode = tree.nodes[DEPTH - 2][kNode[j]];
-            std::uint32_t const lists = lnode.childEnd - lnode.childBegin;
+        for(std::uint32_t i = wid; i < beam_width; i += WARPS) {
+            // warp per kept node, lanes over flat placements
+            auto const& lnode = tree.nodes[DEPTH - 2][block_beam_nodes[i]];
+
+            auto const lists = static_cast<std::uint32_t>(lnode.childEnd - lnode.childBegin);
 
             std::uint32_t total = 0;
-            for(std::uint32_t li = 0; li < lists; ++li)
-                total += search::theoretical_placement_count(slotS[tree.nodes[DEPTH - 1][lnode.childBegin + li].slot]);
+            for(std::uint32_t listIdx = 0; listIdx < lists; ++listIdx)
+                total += search::n_theoretical_placements(
+                    block_slot[tree.nodes[DEPTH - 1][lnode.childBegin + listIdx].slot]
+                );
 
-            std::uint32_t anyLegal = 0; // bit li: some placement of list li fit
+            std::uint32_t legal = 0; // bit listIdx: some placement of list listIdx fit
+            for(std::uint32_t j = lane; j < total; j += 32) {
+                // decode (listIdx, placementIdx) by walking the (<= MAX_LAST) list counts -- no runtime-indexed array
+                auto placementIdx = j;
+                std::uint32_t listIdx = 0;
 
-            for(std::uint32_t idx = lane; idx < total; idx += 32) {
-                // decode (li, i) by walking the (<= MAX_LAST) list counts -- no runtime-indexed array
-                std::uint32_t i = idx, li = 0;
-                sim::PieceType p = slotS[tree.nodes[DEPTH - 1][lnode.childBegin].slot];
-                for(std::uint32_t c = search::theoretical_placement_count(p); i >= c; c = search::theoretical_placement_count(p)) {
-                    i -= c;
-                    p = slotS[tree.nodes[DEPTH - 1][lnode.childBegin + ++li].slot];
+                auto p = block_slot[tree.nodes[DEPTH - 1][lnode.childBegin].slot];
+                for(std::uint32_t listCount = search::n_theoretical_placements(p); placementIdx >= listCount;
+                    listCount = search::n_theoretical_placements(p)) {
+                    placementIdx -= listCount;
+                    p = block_slot[tree.nodes[DEPTH - 1][lnode.childBegin + ++listIdx].slot];
                 }
 
-                auto const [nextBoard, nextClearHist, legal] = search::apply(kBoard[j], kAccum[j], search::nth_placement(p, i));
-                if(!legal)
+                auto const [nextBoard, nextClearHist, stepLegal] = search::apply(
+                    block_beam_boards[i],
+                    block_beam_clear_hists[i],
+                    search::nth_placement(p, placementIdx)
+                );
+                if(!stepLegal)
                     continue;
-                anyLegal |= 1u << li;
-
-                auto const& cnode = tree.nodes[DEPTH - 1][lnode.childBegin + li];
-                bool const heldIsI = cnode.heldSlot == search::HELD_NONE_SLOT
+                legal |= 1u << listIdx;
+                auto const& cnode = tree.nodes[DEPTH - 1][lnode.childBegin + listIdx];
+                auto const heldIsI = cnode.heldSlot == search::HELD_NONE_SLOT
                                      ? false
-                                     : slotS[cnode.heldSlot] == sim::PieceType::I;
+                                     : block_slot[cnode.heldSlot] == sim::PieceType::I;
                 consider(
                     search::ordered_bits(model.evaluate(nextClearHist, nextBoard, heldIsI)),
-                    (j * search::MAX_LAST + li) * MP + i
+                    (i * search::MAX_LAST + listIdx) * MP + placementIdx
                 );
             }
-            // per-list fallback: the piece never fit anywhere -> the frontier board is the leaf.
+            // per-list fallback: the piece never fit anywhere -> the frontier board is the leaf. combine
+            // the legality mask across the warp.
 #pragma unroll
-            for(int o = 16; o > 0; o >>= 1)
-                anyLegal |= __shfl_xor_sync(0xFFFFFFFFu, anyLegal, o);
+            for(int offset = 16; offset > 0; offset >>= 1)
+                legal |= __shfl_xor_sync(0xFFFFFFFFu, legal, offset);
             if(lane == 0)
-                for(std::uint32_t li = 0; li < lists; ++li)
-                    if(((anyLegal >> li) & 1u) == 0)
-                        consider(kVal[j], (j * search::MAX_LAST + li) * MP);
+                for(std::uint32_t listIdx = 0; listIdx < lists; ++listIdx)
+                    if(((legal >> listIdx) & 1u) == 0)
+                        consider(block_beam_scores[i], (i * search::MAX_LAST + listIdx) * MP);
         }
 
-        return block_max_bcast<BLOCK>(best, warpBestS, t);
+        return block_max_bcast<BLOCK>(best, block_warp_best, t);
     }
 
-    /** decode the winning (value | order) key back to the root move and advance the engine. thread 0 only. */
+    /** decode the winning (score | order) key back to the root move and advance the engine. thread 0 only. */
     __device__ void commit_move(
         sim::TetrisEngine* __restrict__ games,
         std::uint32_t g,
-        std::span<sim::PieceType const, search::NUM_SLOTS> slotS,
+        std::span<sim::PieceType const, search::NUM_SLOTS> block_slot,
         plan_tree const& tree,
-        std::span<std::uint32_t const, K1> sel0S,
-        std::span<std::uint8_t const, KMAX> kRoot,
+        std::span<std::uint32_t const, K1> block_selected_root,
+        std::span<std::uint8_t const, KMAX> block_beam_roots,
         unsigned long long winner,
-        ai::stats_v4& stats,
-        int& overS
+        ai::stats_t& stats,
+        int& block_over
     ) {
-        std::uint32_t const order = search::key_pos(winner, SPAN);
-        std::uint32_t const rootRank = order >= LEAF_ORDERS
-                                       ? order - LEAF_ORDERS
-                                       : kRoot[order / (search::MAX_LAST * MP)];
+        auto const order = search::key_pos(winner, SPAN);
+        auto const rootRank = order >= LEAF_ORDERS
+                              ? order - LEAF_ORDERS
+                              : block_beam_roots[order / (search::MAX_LAST * MP)];
 
-        auto const& rootNode = tree.nodes[0][sel0S[rootRank] / MP];
-        search::placement const pl0 = search::nth_placement(slotS[rootNode.slot], sel0S[rootRank] % MP);
+        auto const& rootNode = tree.nodes[0][block_selected_root[rootRank] / MP];
+        auto const rootPlacement =
+            search::nth_placement(block_slot[rootNode.slot], block_selected_root[rootRank] % MP);
 
         if(rootNode.rootHold)
             games[g].hold();
-        std::size_t const cleared = games[g].place(pl0.orientation, pl0.x);
+        auto const cleared = games[g].place(rootPlacement.orientation, rootPlacement.x);
 
-        if(cleared == sim::TetrisEngine::DIED) { overS = 1; }
+        if(cleared == sim::TetrisEngine::DIED) { block_over = 1; }
         else {
             stats.advance(games[g].board(), static_cast<std::uint32_t>(cleared));
             if(games[g].gameOver())
-                overS = 1;
+                block_over = 1;
         }
     }
 
+    /**
+     * play one move: stage 0 scores every legal root and keeps the best K1; each middle level scores
+     * the frontier's continuations and keeps the best KS[level]; the leaf stage expands the last piece
+     * and reduces to a single winning (score | order) key; commit decodes that key back to the root
+     * move and advances the engine. thread 0 is the only one that touches @p games / @p stats directly;
+     * every other thread cooperates purely through @p block.
+     */
+    __device__ void play_move(
+        BlockState& block,
+        sim::TetrisEngine* __restrict__ games,
+        std::uint32_t g,
+        std::uint32_t t,
+        std::uint32_t lane,
+        std::uint32_t wid,
+        net_ref const& model,
+        ai::stats_t& stats
+    ) {
+        reset_move_state(games, g, block.board, block.treeIdx, block.slot, block.rootScores, t);
+        __syncthreads();
+
+        auto const& tree = search::dev::PLAN_TREES[block.treeIdx];
+
+        score_roots(block.board, block.slot, tree, model, block.rootScores, t);
+        __syncthreads();
+
+        auto const rootCount = select_top_block<BLOCK, ROOT_SLOTS, K1>(
+            block.rootScores,
+            block.selectedRoot,
+            block.selectedRootScore,
+            block.warpBest,
+            t,
+            K1
+        );
+        if(rootCount == 0) { // no legal root placement: the game is over (matches the host's `r.none`)
+            if(t == 0)
+                block.over = 1;
+            __syncthreads();
+            return;
+        }
+
+        cache_kept_roots(
+            block.board,
+            block.slot,
+            tree,
+            block.selectedRoot,
+            block.selectedRootScore,
+            rootCount,
+            block.beamBoards[0],
+            block.beamClearHists[0],
+            block.beamScores[0],
+            block.beamNodes[0],
+            block.beamRoots[0],
+            t
+        );
+        // publish the seeded frontier: the next reader (build_mid_segments' beamNodes scan on thread 0,
+        // or the leaf stage directly when DEPTH == 2) crosses threads.
+        __syncthreads();
+
+        // per-thread packed (score | order) maximum: mid-level fallbacks fold in here as they are
+        // discovered; the leaf stage adds the leaves and runs the single block reduction.
+        unsigned long long best = 0;
+        auto n = rootCount;
+
+        std::uint32_t cur = 0;
+
+        for(std::uint32_t levelIdx = 1; levelIdx + 1 < DEPTH; ++levelIdx) {
+            for(std::uint32_t k = t; k < MID_SLOTS; k += BLOCK)
+                block.midScores[k] = 0;
+            if(t == 0) {
+                block.hasChild = 0;
+                build_mid_segments(
+                    block.slot,
+                    tree,
+                    levelIdx,
+                    block.beamNodes[cur],
+                    n,
+                    block.segmentOffset,
+                    block.segmentBeamIdx,
+                    block.segmentNode,
+                    block.segmentPiece,
+                    block.segmentHeld,
+                    block.segmentCount
+                );
+            }
+            __syncthreads();
+
+            score_mid(
+                block.segmentOffset,
+                block.segmentBeamIdx,
+                block.segmentPiece,
+                block.segmentHeld,
+                block.segmentCount,
+                block.beamBoards[cur],
+                block.beamClearHists[cur],
+                model,
+                block.midScores,
+                block.hasChild,
+                t
+            );
+            __syncthreads();
+
+            auto const nNext = select_top_block<BLOCK, MID_SLOTS, KMAX>(
+                block.midScores,
+                block.selectedMid,
+                block.selectedMidScore,
+                block.warpBest,
+                t,
+                search::BEAM_WIDTHS[levelIdx] // runtime level index: reads the __device__ LUT, not KS
+            );
+
+            // kept nodes with no legal continuation: leaves at this depth, keyed by root rank.
+            if(t < n && ((block.hasChild >> t) & 1u) == 0) {
+                unsigned long long const key =
+                    search::pack_key(block.beamScores[cur][t], LEAF_ORDERS + block.beamRoots[cur][t], SPAN);
+                best = key > best ? key : best;
+            }
+
+            cache_kept_mid(
+                block.segmentOffset,
+                block.segmentBeamIdx,
+                block.segmentNode,
+                block.segmentPiece,
+                block.selectedMid,
+                block.selectedMidScore,
+                nNext,
+                block.beamBoards[cur],
+                block.beamClearHists[cur],
+                block.beamRoots[cur],
+                block.beamBoards[cur ^ 1],
+                block.beamClearHists[cur ^ 1],
+                block.beamScores[cur ^ 1],
+                block.beamNodes[cur ^ 1],
+                block.beamRoots[cur ^ 1],
+                t
+            );
+            __syncthreads();
+
+            cur ^= 1;
+            n = nNext;
+        }
+
+        unsigned long long const winner = expand_leaves_and_reduce(
+            block.slot,
+            tree,
+            block.beamBoards[cur],
+            block.beamClearHists[cur],
+            block.beamScores[cur],
+            block.beamNodes[cur],
+            n,
+            model,
+            best,
+            block.warpBest,
+            t,
+            lane,
+            wid
+        );
+
+        if(t == 0)
+            commit_move(
+                games,
+                g,
+                block.slot,
+                tree,
+                block.selectedRoot,
+                block.beamRoots[cur],
+                winner,
+                stats,
+                block.over
+            );
+        __syncthreads();
+    }
+
+    /** the beamed search kernel body: one CUDA block per (model, game). */
     __global__ void __launch_bounds__(BLOCK, 5) eval_kernel(
         sim::TetrisEngine* __restrict__ games,
         std::uint32_t num_blocks,
@@ -380,199 +631,26 @@ namespace {
         std::uint32_t const lane = t & 31u;
         std::uint32_t const wid = t >> 5;
 
-        // ---- shared state: the value net + one move's beam ---------------------------------------
-        __shared__ ai::data_t weightsS[ai::model_t::NUM_PARAMS];
-        __shared__ sim::Board2 boardS; // the committed board
-        __shared__ sim::PieceType slotS[search::NUM_SLOTS]; // pieces per abstract window slot
-        __shared__ std::uint32_t treeIdxS; // which PLAN_TREE (held empty?)
-
-        __shared__ std::uint32_t rootValsS[ROOT_SLOTS];
-        __shared__ std::uint32_t midValsS[MID_SLOTS];
-        __shared__ std::uint32_t sel0S[K1], sel0ValS[K1];
-        __shared__ std::uint32_t selMS[KMAX], selMValS[KMAX];
-
-        // the kept frontier, ping-ponged level to level: board, accum, value, tree node, root rank.
-        __shared__ sim::Board2 kBoardS[2][KMAX];
-        __shared__ search::clear_t kAccumS[2][KMAX];
-        __shared__ std::uint32_t kValS[2][KMAX];
-        __shared__ std::uint8_t kNodeS[2][KMAX];
-        __shared__ std::uint8_t kRootS[2][KMAX];
-        __shared__ std::uint32_t hasChildS; // bit k: kept frontier node k has a legal continuation
-
-        // middle-stage compaction: segment table over the frontier's real child x placement spans
-        // -- see build_mid_segments / cache_kept_mid.
-        __shared__ std::uint16_t segOffS[SEG + 1];
-        __shared__ std::uint8_t segKS[SEG];
-        __shared__ std::uint8_t segNodeS[SEG];
-        __shared__ sim::PieceType segPieceS[SEG];
-        __shared__ std::uint8_t segHeldS[SEG]; // per-segment: child's hold slot resolves to an I piece
-        __shared__ std::uint32_t segCountS;
-
-        __shared__ unsigned long long warpBestS[WARPS];
-        __shared__ int overS;
+        __shared__ BlockState block;
 
         // the game's stat block (ai::stats_v4): committed by thread 0 on every move, scored at the end.
-        // thread 0's local copy is the only live one (t==0 paths); not __shared__ because its default
-        // member initialisers make it non-trivially-default-constructible.
-        ai::stats_v4 stats{};
+        // thread 0's local copy is the only live one (t==0 paths); not part of BlockState because its
+        // default member initialisers make it non-trivially-default-constructible.
+        ai::stats_t stats{};
 
         for(std::uint32_t i = t; i < ai::model_t::NUM_PARAMS; i += BLOCK)
-            weightsS[i] = weights[static_cast<std::size_t>(g / num_games) * ai::model_t::NUM_PARAMS + i];
-        if(t == 0) { overS = games[g].gameOver() ? 1 : 0; }
+            block.weights[i] = weights[static_cast<std::size_t>(g / num_games) * ai::model_t::NUM_PARAMS + i];
+
+        if(t == 0)
+            block.over = games[g].gameOver() ? 1 : 0;
         __syncthreads();
 
-        net_ref const model{weightsS};
+        net_ref const model{block.weights};
 
-        for(std::uint32_t mv = 0; mv < max_moves; ++mv) {
-            if(overS)
+        for(std::uint32_t moveIdx = 0; moveIdx < max_moves; ++moveIdx) {
+            if(block.over)
                 break;
-
-            // ---- per-move staging ----------------------------------------------------------------
-            reset_move_state(games, g, boardS, treeIdxS, slotS, rootValsS, t);
-            __syncthreads();
-
-            plan_tree const& tree = search::dev::PLAN_TREES[treeIdxS];
-
-            // ---- stage 0: score all roots, keep the best K1 ---------------------------------------
-            score_roots(boardS, slotS, tree, model, rootValsS, t);
-            __syncthreads();
-
-            std::uint32_t const n0 = select_top_block<BLOCK, ROOT_SLOTS, K1>(
-                rootValsS,
-                sel0S,
-                sel0ValS,
-                warpBestS,
-                t,
-                K1
-            );
-            if(n0 == 0) { // no legal root placement: the game is over (matches the host's `r.none`)
-                if(t == 0)
-                    overS = 1;
-                __syncthreads();
-                continue;
-            }
-
-            cache_kept_roots(
-                boardS,
-                slotS,
-                tree,
-                sel0S,
-                sel0ValS,
-                n0,
-                kBoardS[0],
-                kAccumS[0],
-                kValS[0],
-                kNodeS[0],
-                kRootS[0],
-                t
-            );
-            // publish the seeded frontier: the next reader (build_mid_segments' kNode scan on thread 0,
-            // or the leaf stage directly when DEPTH == 2) crosses threads.
-            __syncthreads();
-
-            // per-thread packed (value | order) maximum: mid-level fallbacks fold in here as they are
-            // discovered; the leaf stage adds the leaves and runs the single block reduction.
-            unsigned long long best = 0;
-            std::uint32_t cur = 0, n = n0;
-
-            // ---- middle stages: score the frontier's continuations, keep the best KS[l] -----------
-            for(std::uint32_t l = 1; l + 1 < DEPTH; ++l) {
-                for(std::uint32_t i = t; i < MID_SLOTS; i += BLOCK)
-                    midValsS[i] = 0;
-                if(t == 0) {
-                    hasChildS = 0;
-                    build_mid_segments(
-                        slotS,
-                        tree,
-                        l,
-                        kNodeS[cur],
-                        n,
-                        segOffS,
-                        segKS,
-                        segNodeS,
-                        segPieceS,
-                        segHeldS,
-                        segCountS
-                    );
-                }
-                __syncthreads();
-
-                score_mid(
-                    segOffS,
-                    segKS,
-                    segPieceS,
-                    segHeldS,
-                    segCountS,
-                    kBoardS[cur],
-                    kAccumS[cur],
-                    model,
-                    midValsS,
-                    hasChildS,
-                    t
-                );
-                __syncthreads();
-
-                std::uint32_t const nNext = select_top_block<BLOCK, MID_SLOTS, KMAX>(
-                    midValsS,
-                    selMS,
-                    selMValS,
-                    warpBestS,
-                    t,
-                    search::BEAM_WIDTHS[l] // runtime level index: reads the __device__ LUT
-                );
-
-                // kept nodes with no legal continuation: leaves at this depth, keyed by root rank.
-                if(t < n && ((hasChildS >> t) & 1u) == 0) {
-                    unsigned long long const key =
-                        search::pack_key(kValS[cur][t], LEAF_ORDERS + kRootS[cur][t], SPAN);
-                    best = key > best ? key : best;
-                }
-
-                cache_kept_mid(
-                    segOffS,
-                    segKS,
-                    segNodeS,
-                    segPieceS,
-                    selMS,
-                    selMValS,
-                    nNext,
-                    kBoardS[cur],
-                    kAccumS[cur],
-                    kRootS[cur],
-                    kBoardS[cur ^ 1],
-                    kAccumS[cur ^ 1],
-                    kValS[cur ^ 1],
-                    kNodeS[cur ^ 1],
-                    kRootS[cur ^ 1],
-                    t
-                );
-                __syncthreads();
-
-                cur ^= 1;
-                n = nNext;
-            }
-
-            // ---- leaf stage: expand the kept frontier; fold into per-thread packed maxima ----------
-            unsigned long long const winner = expand_leaves_and_reduce(
-                slotS,
-                tree,
-                kBoardS[cur],
-                kAccumS[cur],
-                kValS[cur],
-                kNodeS[cur],
-                n,
-                model,
-                best,
-                warpBestS,
-                t,
-                lane,
-                wid
-            );
-
-            // ---- commit: decode (value | order) back to the root move, advance the engine ---------
-            if(t == 0)
-                commit_move(games, g, slotS, tree, sel0S, kRootS[cur], winner, stats, overS);
-            __syncthreads();
+            play_move(block, games, g, t, lane, wid, model, stats);
         }
 
         // avg metrics divide by piecesPlaced; 0 placed pieces cannot happen on a fresh board, but guard

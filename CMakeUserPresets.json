@@ -7,15 +7,19 @@
     {
       "name": "adaptivecpp-root",
       "hidden": true,
+      "environment": {
+        "TA3_ACPP_ROOT": "E:/cs/code/cpp/compiler/adaptivecpp/release-latest"
+      },
       "cacheVariables": {
-        "AdaptiveCpp_ROOT": "${sourceDir}/../../compiler/adaptivecpp"
+        "AdaptiveCpp_ROOT": "$env{TA3_ACPP_ROOT}",
+        "ACPP_CLANG": "$env{TA3_ACPP_ROOT}/bin/clang++"
       }
     },
     {
       "name": "cth-release-base",
       "hidden": true,
       "cacheVariables": {
-        "cth_ROOT": "${sourceDir}/../cth/out/install/msvc_release"
+        "cth_ROOT": "E:/cs/code/cpp/repo/cth/out/install/msvc_release"
       }
     },
     {

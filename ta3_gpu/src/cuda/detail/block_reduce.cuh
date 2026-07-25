@@ -6,7 +6,12 @@
 #include <span>
 
 /**
- * @brief generic block-wide reduction / top-K selection primitives shared by the beam kernel's stages.
+ * @file block_reduce.cuh
+ * @brief block-wide reduction / top-K selection primitives shared by the beam kernel's stages.
+ * @details structural twin of ../../sycl/detail/block_reduce.hpp -- same functions, same names; warp
+ *  shuffles and @c __syncthreads() here, sub-group primitives and @c group_barrier there. scratch is
+ *  sized to the warp count, not the block, because the warp width is fixed at 32 (the SYCL twin cannot
+ *  assume that, so it sizes to the whole work-group).
  *
  * every array parameter is a fixed-extent std::span: the extent is a template argument, not stored, so
  * span<T,N> compiles to exactly a T* -- identical codegen to a raw pointer -- while the compiler now

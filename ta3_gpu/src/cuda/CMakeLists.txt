@@ -25,7 +25,9 @@ set_target_properties(
         PROPERTIES
         CUDA_STANDARD 20
         CUDA_STANDARD_REQUIRED ON
-        CUDA_ARCHITECTURES native
+        # real cubins for Ada (sm_89) and Blackwell (sm_120, e.g. RTX 5070 Ti). was `native`, which
+        # only ever emitted a cubin for the build machine's GPU.
+        CUDA_ARCHITECTURES "89-real;120-real"
 )
 
 # the search core is constexpr and pulled into device code, so relaxed constexpr is required.

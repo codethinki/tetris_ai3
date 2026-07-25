@@ -29,14 +29,12 @@ target_include_directories(ta3_gpu_sycl PRIVATE "${TA3_SIM_INCL}" "${TA3_AI_INCL
 
 # disable MSVC STL's manually-vectorized algorithms in the device TU. they compile to out-of-line
 # runtime helpers (__std_mismatch_*, __std_swap_ranges_*, ...) that are host-only, so any std::equal /
-# std::array ==/<=>/swap reached from a kernel leaves an unresolved extern that ptxas can't link. with
-# this off the STL uses inline header loops -> device-clean. host-side SIMD is irrelevant here (this lib
-# is the device codegen), and it stays self-consistent within this subproject.
+# std::array ==/<=>/swap reached from a kernel leaves an unresolved extern that ptxas can't link.
 target_compile_definitions(ta3_gpu_sycl PRIVATE _USE_STD_VECTOR_ALGORITHMS=0)
 
 # ignore its prefix from here on -> Boost resolves from vcpkg
 # (newest), exactly like the parent MSVC build does.
-list(APPEND CMAKE_IGNORE_PREFIX_PATH "${AdaptiveCpp_ROOT}")
+#list(APPEND CMAKE_IGNORE_PREFIX_PATH "${AdaptiveCpp_ROOT}")
 
 find_package(cth CONFIG REQUIRED)
 

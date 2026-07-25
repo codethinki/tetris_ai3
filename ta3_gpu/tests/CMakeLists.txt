@@ -19,5 +19,9 @@ find_package(GTest CONFIG REQUIRED)
 # runtime + sim/ai headers.
 target_link_libraries(ta3_gpu_tests PRIVATE GTest::gtest_main ta3::gpu)
 
+# ship this exe's runtime dependencies next to it -- DLLs plus whatever structure-preserving copy
+# dependencies its link closure attached (e.g. the SYCL backend's AdaptiveCpp runtime tree).
+cth_target_copy_dependencies(ta3_gpu_tests)
+
 include(GoogleTest)
 gtest_discover_tests(ta3_gpu_tests)

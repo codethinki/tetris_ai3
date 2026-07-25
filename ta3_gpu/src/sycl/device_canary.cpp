@@ -39,7 +39,7 @@ bool device_bits_canary() {
     q.single_task([=]() {
         bool ok = true;
         ok = ok && (ta3::sim::ctz(CTZ_INPUT) == CTZ_EXPECT);
-        ok = ok && (ta3::sim::popcnt(POPCNT_INPUT) == POPCNT_EXPECT);
+        ok = ok && (ta3::sim::popcount(POPCNT_INPUT) == POPCNT_EXPECT);
         ok = ok && (ta3::sim::bit_width32(BIT_WIDTH_INPUT) == BIT_WIDTH_EXPECT);
         *result = ok ? 1 : 0;
     });

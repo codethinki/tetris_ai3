@@ -118,8 +118,8 @@ std::vector<float> ModelEvaluator::eval(
         ctx.queue.memcpy(ctx.weights, weights.data(), weights.size() * sizeof(float));
 
         ctx.queue.submit([&](sycl::handler& cgh) {
-            // one work-group-scope SharedState allocation (local_accessor<SharedState, 0>).
-            sycl::local_accessor<SharedState, 0> shared{cgh};
+            // one work-group-scope WorkGroupState allocation (local_accessor<WorkGroupState, 0>).
+            sycl::local_accessor<WorkGroupState, 0> shared{cgh};
 
             sim::TetrisEngine* const gamesPtr = ctx.games;
             float const* const weightsPtr = ctx.weights;
@@ -134,8 +134,8 @@ std::vector<float> ModelEvaluator::eval(
                     sycl::range<1>{BLOCK}
                 },
                 [=](sycl::nd_item<1> it) {
-                    SharedState& sh = shared;
-                    eval_kernel(it, sh, gamesPtr, numBlocks, numGames, weightsPtr, maxMoves, fitnessPtr);
+                    WorkGroupState& wgroup = shared;
+                    eval_kernel(it, wgroup, gamesPtr, numBlocks, numGames, weightsPtr, maxMoves, fitnessPtr);
                 }
             );
         });

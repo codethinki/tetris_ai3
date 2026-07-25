@@ -10,18 +10,13 @@
       "inherits": "adaptivecpp-root",
       "cacheVariables": {
         "ACPP_TARGETS": "generic",
-        "AdaptiveCpp_ROOT": "${sourceDir}/../../../../../compiler/adaptivecpp",
-        "ACPP_CLANG": "${sourceDir}/../../../../../compiler/adaptivecpp/bin/clang++",
         "ACPP_EXTRA_ARGS": "-O3"
       }
     },
     {
       "name": "acpp-cth-base",
       "hidden": true,
-      "inherits": "cth-release-base",
-      "cacheVariables": {
-        "cth_ROOT": "${sourceDir}/../../../../cth/out/install/msvc_release"
-      }
+      "inherits": "cth-release-base"
     },
     {
       "name": "acpp-base",
