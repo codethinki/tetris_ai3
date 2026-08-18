@@ -1,6 +1,6 @@
 #pragma once
 #include "ta3/sim/board2.hpp"
-#include "ta3/sim/tetris_defs.hpp"
+#include "ta3/sim/utility/tetris_defs.hpp"
 #include "ta3/sim/tetris_engine.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 
@@ -176,7 +176,9 @@ constexpr bool TetrisGame::rotate(RotationType rotation) {
 constexpr size_t TetrisGame::place() {
     size_t const cleared = _engine.place(_orientation, _offset.x);
     spawn();
-    return cleared;
+    // the engine returns DIED on a topping-out move; this layer's contract is "rows cleared"
+    // (top-out is reported separately via gameOver()), so never leak the sentinel as a count
+    return cleared == TetrisEngine::DIED ? 0 : cleared;
 }
 
 constexpr void TetrisGame::hold() {

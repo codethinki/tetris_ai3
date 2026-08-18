@@ -1,8 +1,10 @@
 #include "ta3/trainer/tetris_problem2.hpp"
 
-#include "ta3/ai/ai_multi_tetris.hpp"
+#include "ta3/gpu/model_eval.hpp"
+#include "ta3/sim/utility/xoshiro256ss.hpp"
 
 #include <algorithm>
+#include <ranges>
 #include <span>
 #include <vector>
 #include <print>
@@ -18,63 +20,64 @@ bounds_vec2 TetrisProblem2::get_bounds() const {
     };
 }
 
+// single-model fitness is just a one-model batch -- both paths funnel through evalBatch / one launch.
 pvecd TetrisProblem2::fitness(pvecd const& dv) const {
-    return {cth::co::sync(_config->gameScheduler.spawn(evalGames(dv)))};
+    cth::log::msg<cth::except::WARNING>("Not using batch fitness");
+    return batch_fitness(dv);
 }
 
 pvecd TetrisProblem2::batch_fitness(pvecd const& dvs) const {
     auto const params = ai::model_t::params();
     auto const count = dvs.size() / params;
 
-    std::vector<cth::co::sync_task<double>> evals{};
-    evals.reserve(count);
-    for(auto i = 0uz; i < count; ++i)
-        evals.push_back(spawnEval(std::span{dvs}.subspan(i * params, params)));
+    // pagmo hands us the whole population's decision vectors concatenated, which is already the
+    // model-major layout the batched evaluator wants -- just narrow double -> weights_t (float).
+    std::vector<gpu::weights_t> weights;
+    weights.reserve(dvs.size());
+    for(double const x : dvs)
+        weights.push_back(static_cast<gpu::weights_t>(x));
 
-    // start them all, then join -- awaiting an already finished task is a noop
-    for(auto& eval : evals)
-        eval.start();
-
-    pvecd fitnesses(count);
-    for(auto i = 0uz; i < count; ++i)
-        fitnesses[i] = evals[i].await();
-
-    return fitnesses;
+    // one submission -> one kernel launch of count*simulationsPerEval blocks.
+    return cth::co::sync(spawnBatch(std::move(weights), count));
 }
 
-auto TetrisProblem2::evalGames(std::span<double const> dv) const -> cth::co::executor_task<double> {
-    ai::AiMultiTetris games{_config->simulationsPerEval, *_config->seed};
+auto TetrisProblem2::evalBatch(
+    std::vector<gpu::weights_t> weights,
+    std::size_t num_models
+) const
+    -> cth::co::executor_task<std::vector<double>> {
+    auto const games = _config->simulationsPerEval;
+    std::vector<double> means(num_models, 0.0);
 
-    for(auto moves = 0uz; !games.empty() && moves < _config->maxMoves; ++moves) {
-        co_await modelScheduler().schedule();
+    try {
+        auto& evaluator = _config->evalPool->acquire();
 
-        auto& model = _config->modelPool->acquire();
-        model.loadWeights(dv);
-        auto const scores = model.batchForward(games.inputs());
+        // model-major: model m on game g lives at results[m*games + g].
+        auto const results = gpu::simulate(evaluator, weights, num_models, games, *_config->seed, _config->maxMoves);
 
-        co_await gameScheduler().schedule();
-        games.next(scores);
+
+        for(std::size_t m = 0; m < num_models; ++m) {
+            auto const modelGames = std::span{results}.subspan(m * games, games);
+            auto const sum = std::ranges::fold_left(modelGames, 0.0, [](double s, float v) { return s + v; });
+            // score_v4 is higher-is-better; pagmo minimises, so hand it the negation.
+            means[m] = -(sum / static_cast<double>(games));
+        }
+    }
+    catch(std::exception const& e) {
+        cth::log::msg<cth::except::ERR>("{}", e.what());
+        abort();
     }
 
-    co_return -meanScore(games);
+    co_return means;
 }
 
-auto TetrisProblem2::spawnEval(std::span<double const> dv) const -> cth::co::sync_task<double> {
-    co_return co_await gameScheduler().spawn(evalGames(dv));
+auto TetrisProblem2::spawnBatch(
+    std::vector<gpu::weights_t> weights,
+    std::size_t num_models
+) const
+    -> cth::co::sync_task<std::vector<double>> {
+    co_return co_await _config->modelScheduler.spawn(evalBatch(std::move(weights), num_models));
 }
 
-double TetrisProblem2::meanScore(ai::AiMultiTetris const& games) {
-    auto const dead = games.deadStats();
-    auto const alive = games.gamesStats();
-    auto const count = static_cast<double>(dead.size() + alive.size());
 
-    auto const score = [count](double sum, ai::tetris_stats_t const& stats) {
-        return sum + stats.score() / count;
-    };
-
-    auto aliveScore = std::ranges::fold_left(alive, 0., score);
-    auto deadScore = std::ranges::fold_left(dead, 0., score);
-
-    return aliveScore + deadScore;
-}
 }

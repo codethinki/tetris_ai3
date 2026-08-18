@@ -1,11 +1,8 @@
 #pragma once
-#include "ta3/sim/glm_defs.hpp"
+#include "ta3/sim/ivec2.hpp"
 
 #include <cth/enums.hpp>
-#include <cth/macro.hpp>
-#include <cth/numeric.hpp>
 #include <cth/string/format.hpp>
-#include <cth/io/log.hpp>
 
 #include <array>
 #include <cstddef>
@@ -30,6 +27,8 @@ enum class PieceType : uint32_t {
     L,
     COUNT,
 };
+
+inline constexpr auto NO_PIECE = PieceType::COUNT;
 
 }
 
@@ -143,20 +142,20 @@ CTH_GEN_ENUM_DEREF_OVERLOAD(ta3::sim::Orientation)
 namespace ta3::sim {
 
 constexpr Orientation rotate(int steps, Orientation offset) {
-    return static_cast<Orientation>(cth::num::cycle<int>(*offset + steps, 0, *Orientation::SIZE));
+    int const size = static_cast<int>(*Orientation::SIZE);
+    int const wrapped = ((static_cast<int>(*offset) + steps) % size + size) % size;
+    return static_cast<Orientation>(wrapped);
 }
 
 
 
 constexpr vec2 to_offset(MoveType type) {
-    CTH_CRITICAL(type == MoveType::SIZE, "must be a move"){}
-
     switch(type) {
         case MoveType::LEFT: return {-1, 0};
         case MoveType::RIGHT: return {1, 0};
         case MoveType::DOWN: return {0, 1};
         case MoveType::SIZE:
-        default: std::unreachable();
+        default: return {};
     }
 
 
@@ -235,7 +234,7 @@ constexpr std::string_view to_string(PieceType e) {
 }
 
 }
-
+#ifndef DISABLE_CPP23
 CTH_FORMAT_CLASS(
     ta3::sim::Orientation,
     "{}",
@@ -261,3 +260,4 @@ CTH_FORMAT_CLASS(
     "{}",
     ([](auto const& v) { return ta3::sim::to_string(v); })
 );
+#endif

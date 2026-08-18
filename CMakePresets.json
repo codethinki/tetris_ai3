@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 9,
   "configurePresets": [
     {
       "name": "base",
@@ -8,11 +8,20 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/lib/cth_cmake/toolchain.cmake"
       }
     },
+
     {
       "name": "add_tests",
       "hidden": true,
       "cacheVariables": {
         "TA3_ENABLE_TESTS": true
+      }
+    },
+    {
+      "name": "global-reldebug-base",
+      "hidden": true,
+      "inherits": [ "base", "add_tests" ],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
     },
     {
@@ -45,6 +54,21 @@
       "cacheVariables": {
         "CMAKE_C_COMPILER": "cl",
         "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
+      "name": "cuda-base",
+      "hidden": true,
+      "cacheVariables": {
+        "TA3_GPU_BACKEND": "CUDA",
+        "CMAKE_CUDA_FLAGS": "-lineinfo -Xptxas=-v"
+      }
+    },
+    {
+      "name": "sycl-base",
+      "hidden": true,
+      "cacheVariables": {
+        "TA3_GPU_BACKEND": "SYCL"
       }
     }
   ]

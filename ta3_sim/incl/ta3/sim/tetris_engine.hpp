@@ -1,9 +1,9 @@
 #pragma once
 #include "ta3/sim/board2.hpp"
-#include "ta3/sim/tetris_defs.hpp"
-#include "ta3/sim/utility.hpp"
+#include "ta3/sim/utility/xoshiro256ss.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 #include "ta3/sim/pieces/piece_offsets.hpp"
+#include "ta3/sim/utility/tetris_defs.hpp"
 
 #include <array>
 #include <cstddef>
@@ -91,7 +91,7 @@ private:
     std::array<PieceType, *NO_PIECE> _bag{};
     size_t _bagPos = 0;
 
-    Xoshiro256ss _rng;
+    xoshiro256ss _rng;
 };
 
 }

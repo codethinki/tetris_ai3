@@ -15,7 +15,7 @@ target_include_directories(
 
 find_package(cth CONFIG REQUIRED)
 
-target_link_libraries(ta3_ai PUBLIC cth::cth ta3::sim dlib::dlib)
+target_link_libraries(ta3_ai PUBLIC cth::cth ta3::sim)
 
 # tests
 if(TA3_ENABLE_TESTS)

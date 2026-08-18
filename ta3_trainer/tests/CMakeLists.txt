@@ -11,7 +11,12 @@ target_include_directories(
 
 find_package(GTest CONFIG REQUIRED)
 
-target_link_libraries(ta3_trainer_tests PRIVATE GTest::gtest_main ta3::trainer)
+target_link_libraries(
+        ta3_trainer_tests
+        PRIVATE
+        GTest::gtest_main
+        ta3::trainer
+)
 
 include(GoogleTest)
 gtest_discover_tests(ta3_trainer_tests)

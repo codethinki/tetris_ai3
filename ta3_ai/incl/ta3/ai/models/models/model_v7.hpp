@@ -1,21 +1,19 @@
 #pragma once
 
 #include "ta3/ai/model_defs.hpp"
-#include "../metrics/tetris_stats_v4.hpp"
+#include "ta3/ai/models/metrics/tetris_stats_v4.hpp"
+#include "ta3/ai/models/models/utility.hpp"
 
 #include <ta3/sim/board2.hpp>
 #include <ta3/sim/pieces/piece_defs.hpp>
 
-#include <array>
 #include <algorithm>
-#include <memory>
+#include <array>
 #include <span>
-#include <vector>
-#include <stdexcept>
 
 namespace ta3::ai {
 
-constexpr size_t V7_INPUTS = 5;
+constexpr size_t V7_INPUTS = 8;
 constexpr size_t V7_FC1_SIZE = 16, V7_FC2_SIZE = 8, V7_OUT_SIZE = 1;
 
 /** @brief a minimal stats-only value model -- three fc layers over the v7 feature vector */
@@ -23,8 +21,11 @@ class ModelV7 {
     enum feature : size_t {
         SURFACE_VARIANCE,
         HOLES,
-        HOLE_DEPTHS,
-        ERODE_PIECE_CELLS,
+        CLEAR_0,
+        CLEAR_1,
+        CLEAR_2,
+        CLEAR_3,
+        CLEAR_SCORE,
         AGG_HEIGHT,
         FEATURE_COUNT,
     };
@@ -33,36 +34,48 @@ class ModelV7 {
 public:
     static constexpr size_t INPUTS = V7_INPUTS;
     static constexpr size_t OUTPUTS = V7_OUT_SIZE;
-    static constexpr glm::dvec2 BOUNDS{-2, 2};
+    static constexpr sim::dvec2 BOUNDS{-2, 2};
 
     // Calculate parameter count at compile time for the flat vector array
-    static constexpr size_t NUM_PARAMS = (V7_INPUTS * V7_FC1_SIZE + V7_FC1_SIZE) +
-        (V7_FC1_SIZE * V7_FC2_SIZE + V7_FC2_SIZE) +
-        (V7_FC2_SIZE * V7_OUT_SIZE + V7_OUT_SIZE);
+    static constexpr size_t NUM_PARAMS =
+        fc_layer_params(V7_INPUTS, V7_FC1_SIZE)
+        + fc_layer_params(V7_FC1_SIZE, V7_FC2_SIZE)
+        + fc_layer_params(V7_FC2_SIZE, V7_OUT_SIZE);
+
+    /** @brief a full flat weight buffer (host array or device shared memory), fixed at NUM_PARAMS */
+    using weights_t = std::span<ai::data_t const, NUM_PARAMS>;
 
     static constexpr size_t inputs() { return INPUTS; }
     static constexpr size_t outputs() { return OUTPUTS; }
-    static constexpr glm::dvec2 bounds() { return BOUNDS; }
+    static constexpr sim::dvec2 bounds() { return BOUNDS; }
 
-    using tetris_stats_t = metric::stats<
-        score_v4,
-        metric::agg_height,
-        //score
-        metric::total_clears,
-        metric::avg_max_height,
-        metric::avg_hole_depths
-    >;
+    static constexpr data_t CLEAR_COUNT_NORM = data_t{1} / data_t{4};
+    static constexpr data_t CLEAR_SCORE_NORM = data_t{1} / data_t{10};
 
     /**
-     * @brief encodes one candidate: the next piece, the held piece, then the board stats
+     * @brief encodes the inputs
+     * @param clears clears accumulated from the committed board down to @p board
      * @param[out] out exactly @ref INPUTS values to overwrite
      */
-    static constexpr void extractInputs(tetris_stats_t const& stats, std::span<data_t> out) {
-        out[SURFACE_VARIANCE] = stats.get(metric::norm_surface_var);
-        out[HOLES] = stats.get(metric::norm_holes);
-        out[HOLE_DEPTHS] = stats.get(metric::norm_hole_depths);
-        out[ERODE_PIECE_CELLS] = stats.get(metric::norm_eroded_score);
-        out[AGG_HEIGHT] = stats.get(metric::norm_agg_height);
+    static constexpr void extractInputs(
+        ai::clear_hist_t clears,
+        sim::Board2 const& board,
+        std::array<data_t, INPUTS>& out
+    ) {
+        static_assert(CLEAR_1 == CLEAR_0 + 1 && CLEAR_2 == CLEAR_0 + 2 && CLEAR_3 == CLEAR_0 + 3);
+        static_assert(ai::CLEAR_KINDS == 4);
+
+        auto rawScore = 0;
+        for(size_t k = 0; k < ai::CLEAR_KINDS; ++k) {
+            auto const n = clears.count(k);
+            out[CLEAR_0 + k] = static_cast<data_t>(n) * CLEAR_COUNT_NORM;
+            rawScore += metric::CLEAR_SCORE_TABLE[k + 1] * static_cast<int>(n); // table indexed by LINES
+        }
+
+        out[SURFACE_VARIANCE] = metric::norm_surface_var(board);
+        out[HOLES] = metric::norm_holes(board);
+        out[CLEAR_SCORE] = static_cast<data_t>(rawScore) * CLEAR_SCORE_NORM;
+        out[AGG_HEIGHT] = metric::norm_agg_height(board);
     }
 
     constexpr ModelV7() { init(); }
@@ -73,10 +86,45 @@ public:
     /** @brief overwrites the net weights in place (no re-allocation), for reuse across evaluations */
     constexpr void loadWeights(std::span<double const> weights);
 
-    [[nodiscard]] constexpr std::array<ai::data_t, OUTPUTS> forward(std::span<ai::data_t const, INPUTS> input) const;
+    [[nodiscard]] constexpr std::array<ai::data_t, OUTPUTS> forward(
+        std::array<ai::data_t, INPUTS> const& input
+    ) const;
 
-    /** @brief scores a packed buffer of @ref INPUTS-wide parsed inputs; the count is its size / @ref INPUTS */
-    [[nodiscard]] constexpr std::vector<ai::data_t> batchForward(std::span<ai::data_t const> inputs) const;
+    /** @brief forward pass reading weights from an external buffer (host array or device shared memory) */
+    [[nodiscard]] static constexpr std::array<ai::data_t, OUTPUTS> forward(
+        std::array<ai::data_t, INPUTS> const& input,
+        weights_t w
+    );
+
+
+    /**
+     * evals the board with the weights
+     * @note @p heldIsI is accepted for interface parity with later model versions (e.g. ModelV8) but
+     *  unused here -- ModelV7 does not read the hold slot.
+     */
+    [[nodiscard]] static constexpr ai::data_t evaluate(
+        ai::clear_hist_t clears,
+        sim::Board2 const& board,
+        bool /*heldIsI*/,
+        weights_t w
+    ) {
+        std::array<ai::data_t, INPUTS> in{};
+        extractInputs(clears, board, in);
+        return forward(in, w)[0];
+    }
+
+    /**
+     * evals the board with the weights
+     */
+    [[nodiscard]] constexpr ai::data_t evaluate(
+        ai::clear_hist_t clears,
+        sim::Board2 const& board,
+        bool
+    ) const {
+        std::array<ai::data_t, INPUTS> in{};
+        extractInputs(clears, board, in);
+        return forward(in, weights_t{_weights})[0];
+    }
 
     [[nodiscard]] constexpr size_t size() const { return NUM_PARAMS; }
 
@@ -85,7 +133,6 @@ public:
 private:
     constexpr void init();
 
-    // Flat, L1-cache friendly array replacing the dlib unique_ptr
     std::array<ai::data_t, NUM_PARAMS> _weights{};
 };
 
@@ -100,68 +147,32 @@ namespace ta3::ai {
 constexpr void ModelV7::init() { _weights.fill(0); }
 
 constexpr void ModelV7::loadWeights(std::span<double const> weights) {
-    CTH_CRITICAL(weights.size() != NUM_PARAMS, "weights do not match size") {}
-
     for(size_t i = 0; i < NUM_PARAMS; ++i)
         _weights[i] = static_cast<ai::data_t>(weights[i]);
 }
 
+
+
 constexpr std::array<ai::data_t, ModelV7::OUTPUTS> ModelV7::forward(
-    std::span<ai::data_t const, INPUTS> input
-) const {
-    // A small inline helper lambda to do dense layer math cleanly
-    auto dense_layer = [&](
-        std::span<ai::data_t const> in,
-        std::span<ai::data_t> out,
-        size_t& offset,
-        bool relu
-    ) constexpr {
-        size_t inDim = in.size();
-        size_t outDim = out.size();
+    std::array<ai::data_t, INPUTS> const& input,
+    weights_t w
+) {
+    /** @brief per-layer param counts, for slicing the flat weight buffer */
+    constexpr size_t l1Params = fc_layer_params(V7_INPUTS, V7_FC1_SIZE);
+    constexpr size_t l2Params = fc_layer_params(V7_FC1_SIZE, V7_FC2_SIZE);
+    constexpr size_t l3Params = fc_layer_params(V7_FC2_SIZE, V7_OUT_SIZE);
+    static_assert(
+        l1Params + l2Params + l3Params == NUM_PARAMS,
+        "layer slices must cover the flat weight buffer exactly"
+    );
 
-        for(size_t o = 0; o < outDim; ++o) {
-            // Bias is stored right after the weights for this layer
-            ai::data_t val = _weights[offset + (inDim * outDim) + o];
-
-            for(size_t i = 0; i < inDim; ++i) { val += in[i] * _weights[offset + (o * inDim) + i]; }
-            out[o] = relu ? std::max<ai::data_t>(0, val) : val;
-        }
-        offset += (inDim * outDim) + outDim; // Advance the pointer for the next layer
-    };
-
-    std::array<ai::data_t, V7_FC1_SIZE> out1{};
-    std::array<ai::data_t, V7_FC2_SIZE> out2{};
-    std::array<ai::data_t, OUTPUTS> out3{};
-
-    size_t wOffset = 0;
-
-
-    dense_layer(input, out1, wOffset, true);
-    dense_layer(out1, out2, wOffset, true);
-    dense_layer(out2, out3, wOffset, false);
-
-    return out3;
+    auto const h1 = dense<INPUTS, V7_FC1_SIZE, true>(input, w.subspan<0, l1Params>());
+    auto const h2 = dense<V7_FC1_SIZE, V7_FC2_SIZE, true>(h1, w.subspan<l1Params, l2Params>());
+    return dense<V7_FC2_SIZE, OUTPUTS, false>(h2, w.subspan<l1Params + l2Params, l3Params>());
 }
 
-constexpr std::vector<ai::data_t> ModelV7::batchForward(
-    std::span<ai::data_t const> inputs
-) const {
-    CTH_CRITICAL(inputs.size() % INPUTS != 0, "batch forward inputs not a multiple of INPUTS") {}
-
-    size_t const count = inputs.size() / INPUTS;
-    if(count == 0)
-        return {};
-
-    // Note: C++20 supports constexpr std::vector
-    std::vector<ai::data_t> result(count * OUTPUTS);
-
-    for(size_t i = 0; i < count; ++i) {
-        std::span<ai::data_t const, INPUTS> singleIn(&inputs[i * INPUTS], INPUTS);
-        auto singleOut = forward(singleIn);
-        std::copy_n(singleOut.begin(), OUTPUTS, result.begin() + (i * OUTPUTS));
-    }
-
-    return result;
-}
+constexpr std::array<ai::data_t, ModelV7::OUTPUTS> ModelV7::forward(
+    std::array<ai::data_t, INPUTS> const& input
+) const { return forward(input, weights_t{_weights}); }
 
 } // namespace ta3::ai

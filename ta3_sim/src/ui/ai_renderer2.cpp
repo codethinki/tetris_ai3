@@ -6,7 +6,6 @@
 #include <chrono>
 #include <thread>
 #include <utility>
-#include <print>
 
 namespace ta3::sim {
 

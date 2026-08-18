@@ -1,18 +1,12 @@
 {
   "dependencies": [
-    "blas",
     "boost-asio",
     "boost-serialization",
-    "cuda",
-    "cudnn",
-    "eigen3",
     "glm",
     "gtest",
-    "lapack-reference",
-    "libjpeg-turbo",
-    "libpng",
     "pagmo2",
     "raylib",
-    "zstd"
+    "zstd",
+    "eigen3"
   ]
 }

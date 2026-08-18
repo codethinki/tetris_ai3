@@ -1,12 +1,12 @@
 #pragma once
-#include "aggregate.hpp"
+#include "tetris_stats.hpp"
 #include "metrics.hpp"
 #include "score_v1.hpp"
 
 namespace ta3::ai {
 /** the v4 stat block: the stateful metrics the models + score read */
-using stats_v4 = metric::stats<
-    score_v4,
+using stats_v4 = metric::tetris_stats<
+    score_v1,
     metric::total_lines_cleared,
     metric::new_holes,
     //score

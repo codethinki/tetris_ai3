@@ -1,158 +1,37 @@
 #pragma once
+#include <ta3/sim/utility/bits.hpp>
+#include <ta3/sim/utility/cuda_constant.hpp>
 #include "ta3/ai/model_defs.hpp"
+
+#include "v_board_metrics.hpp"
 
 #include <ta3/sim/board2.hpp>
 #include <ta3/sim/pieces/piece_defs.hpp>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <span>
 #include <type_traits>
 
 
-namespace ta3::ai::metric {
-struct input_t {
-    size_t clearedLines;
-    size_t clearedPieceCells;
-    sim::Board2 const* board;
-    sim::PieceType placedPiece;
-    sim::PieceType heldPiece;
-    size_t piecesPlaced;
-    std::span<sim::PieceType const> pieceQueue;
-};
-
-}
-
-
 
 namespace ta3::ai::metric {
 
-constexpr auto placed_piece = [][[nodiscard]](input_t const& in) { return in.placedPiece; };
-
-constexpr auto pieces_placed = [][[nodiscard]](input_t const& in) { return in.piecesPlaced; };
-
-constexpr auto held_piece = [][[nodiscard]](input_t const& in) { return in.heldPiece; };
-constexpr auto piece_queue = [][[nodiscard]](input_t const& in) { return in.pieceQueue; };
-constexpr auto next_piece = [][[nodiscard]](input_t const& in) {
-    return !in.pieceQueue.empty() ? in.pieceQueue.front() : sim::PieceType::COUNT;
-};
-
-constexpr auto lines_cleared = [][[nodiscard]](input_t const& in) { return in.clearedLines; };
-
-constexpr auto board = [][[nodiscard]](input_t const& in) { return in.board; };
-
-constexpr auto holes = [][[nodiscard]](input_t const& in) { return in.board->holes(); };
-constexpr auto norm_holes = [][[nodiscard]](input_t const& in) { return static_cast<data_t>(holes(in)) / data_t{20}; };
-
-namespace dev {
-/** bit-plane masks: @c PLANE[b] has bit @c y set iff bit @c b of @c y is set, over the field rows */
-inline constexpr auto HOLE_DEPTH_PLANES = [] {
-    constexpr size_t B = std::bit_width(static_cast<unsigned>(sim::HEIGHT - 1));
-    std::array<uint32_t, B> planes{};
-    for(size_t b = 0; b < B; ++b)
-        for(uint32_t y = 0; y < sim::HEIGHT; ++y)
-            if((y >> b) & 1u)
-                planes[b] |= uint32_t{1} << y;
-    return planes;
-}();
-
-/** sum of the indices of set bits in a column, via one @c popcount per bit-plane (no per-row scan) */
-[[nodiscard]] constexpr size_t sum_set_bit_indices(uint32_t c) {
-    size_t s = 0;
-    for(size_t b = 0; b < HOLE_DEPTH_PLANES.size(); ++b)
-        s += (size_t{1} << b) * static_cast<size_t>(std::popcount(c & HOLE_DEPTH_PLANES[b]));
-    return s;
-}
-} // namespace dev
+/** @attention TA3_CUDA_CONSTANT: indexed from device code with a runtime value (see @ref ai::CLEAR_BUMP) */
+TA3_CUDA_CONSTANT std::array<int, sim::BLOCKS + 1> CLEAR_SCORE_TABLE{{0, -1, -2, -3, 10}};
 
 
-constexpr auto hole_depths = [][[nodiscard]](input_t const& in) {
-    static constexpr size_t H = sim::HEIGHT;
-    size_t sum = 0;
-    for(size_t x = 0; x < sim::WIDTH; ++x) {
-        auto const c = in.board->raw_column(x);
-        size_t const n = static_cast<size_t>(std::popcount(c));
-        size_t const s = dev::sum_set_bit_indices(c);
-
-        size_t const pos = (H - 1) * n + n * (n + 1) / 2; // grouped so the subtraction stays >= 0
-        size_t const neg = s + n * n;
-        sum += pos - neg;
-    }
-    return sum;
-};
-
-constexpr auto norm_hole_depths = [][[nodiscard]](input_t const& in) {
-    return static_cast<data_t>(hole_depths(in)) / data_t{200};
-};
-
-constexpr auto surface_variance = [][[nodiscard]](input_t const& in) {
-    int sum = 0;
-    auto prevHeight = in.board->height(0);
-    for(int x = 1; x < static_cast<int>(sim::WIDTH); ++x) {
-        auto const h = in.board->height(x);
-        int const diff = h - std::exchange(prevHeight, h);
-        sum += diff * diff;
-    }
-    return cth::num::heron_sqrt<double>(sum);
-};
-constexpr auto norm_surface_var = [][[nodiscard]](input_t const& in) {
-    return static_cast<data_t>(surface_variance(in)) / data_t{100};
-};
-
-constexpr auto max_height = [][[nodiscard]](input_t const& in) {
-    size_t max = in.board->height(0);
-    for(size_t i = 1; i < sim::WIDTH; ++i)
-        max = std::max(in.board->height(i), max);
-    return max;
-};
-
-constexpr auto agg_height = [][[nodiscard]](input_t const& in) {
-    size_t sum = 0;
-    for(size_t i = 0; i < sim::WIDTH; ++i)
-        sum += in.board->height(i);
-    return sum;
-};
-constexpr auto norm_agg_height = [][[nodiscard]](input_t const& in) {
-    return static_cast<data_t>(agg_height(in)) / data_t{200};
-};
-
-
-/** vertical filled<->empty transitions per column, counting the floor below the field as filled */
-constexpr auto y_transitions = [][[nodiscard]](input_t const& in) {
-    static constexpr uint32_t FIELD = (uint32_t{1} << sim::HEIGHT) - 1; // field bits [0, HEIGHT)
-    size_t sum = 0;
-    for(size_t x = 0; x < sim::WIDTH; ++x) {
-        // set the floor bit at HEIGHT so an empty bottom cell counts as a transition
-        uint32_t const c = in.board->raw_column(x) | (uint32_t{1} << sim::HEIGHT);
-        // bit y of (c ^ c>>1) marks a boundary between rows y and y+1; mask to the field
-        sum += static_cast<size_t>(std::popcount((c ^ (c >> 1)) & FIELD));
-    }
-    return sum;
-};
-constexpr auto norm_y_transitions = [][[nodiscard]](input_t const& in) {
-    return static_cast<data_t>(y_transitions(in)) / data_t{40};
-};
-
-constexpr auto eroded_score = [][[nodiscard]](input_t const& in) { return in.clearedLines * in.clearedPieceCells; };
-constexpr auto norm_eroded_score = [][[nodiscard]](input_t const& in) {
-    return static_cast<data_t>(eroded_score(in)) / data_t{16};
-};
-
-
-constexpr auto bumpiness = [][[nodiscard]](input_t const& in) {
-    size_t sum = 0;
-    auto prevHeight = in.board->height(0);
-    for(size_t i = 1; i < sim::WIDTH; i++) {
-        auto const h = in.board->height(i);
-        sum += h > prevHeight ? h - prevHeight : prevHeight - h;
-        prevHeight = h;
-    }
-    return sum;
-};
+constexpr auto board = [][[nodiscard]](sim::Board2 const& board) { return board; };
 
 }
 
 namespace ta3::ai::metric::dev {
+
+/**
+ * @attention do not use, inherit from @ref stateful_metric
+ */
+struct stateful_metric_base {};
 
 /**
      * general metric template
@@ -161,64 +40,75 @@ namespace ta3::ai::metric::dev {
      * @tparam Combinator f(agg_t const&, input_t const&) -> auto
      */
 template<auto Update, auto Initial, auto Combinator>
-struct game_metric {
-    using agg_t = decltype(Initial);
+struct stateful_metric : stateful_metric_base {
+    // remove_const: decltype of a class-type NTTP object is const-qualified per the standard (strict on
+    // gcc/clang; MSVC/nvcc are lenient) -- the aggregate must stay mutable for advance().
+    using agg_t = std::remove_const_t<decltype(Initial)>;
 
-    constexpr void advance(input_t const& in) { Update(agg, in); }
-    constexpr auto operator()(input_t const& in) const { return Combinator(agg, in); }
+    constexpr void advance(sim::Board2 const& board, uint32_t lines_cleared) { Update(agg, board, lines_cleared); }
+    constexpr auto eval(uint32_t pieces_placed) const { return Combinator(agg, pieces_placed); }
 
     agg_t agg = Initial;
 };
 
 /**
-     *
-     * @tparam MoveMetric f(input_t const&) -> agg_t
-     * @tparam Combinator f(game_input_t const&, agg_t) -> auto
-     */
+ * per-move summing metric
+ * @tparam MoveMetric f(Board const& board, uint32_t lines_cleared) -> agg_t
+ * @tparam Combinator f(game_input_t const&, agg_t) -> auto
+ * @note a struct, not a @ref stateful_metric alias: nvcc's front end loses an alias-template's
+ *  parameter inside lambdas written in the alias ("identifier MoveMetric is undefined"), so the
+ *  lambda body lives in a member function instead. semantics identical; required since the stat
+ *  block is committed on-device by the eval kernel.
+ */
 template<auto MoveMetric, auto Combinator>
-using sum_metric = game_metric<
-    [](auto& agg, input_t const& in) { agg += MoveMetric(in); },
-    std::invoke_result_t<decltype(MoveMetric), input_t>{}, // zero of the move-metric's result type
-    Combinator
->;
+struct sum_board_metric : stateful_metric_base {
+    using agg_t = std::invoke_result_t<decltype(MoveMetric), sim::Board2 const&, uint32_t>;
 
-/** empty aggregate for game metrics that only surface a group-owned counter */
-struct stateless_t {};
+    constexpr void advance(sim::Board2 const& board, uint32_t lines_cleared) {
+        agg += MoveMetric(board, lines_cleared);
+    }
+    constexpr auto eval(uint32_t pieces_placed) const { return Combinator(agg, pieces_placed); }
+
+    agg_t agg{}; // zero of the move-metric's result type
+};
 
 /**
      * sums up the MoveMetric
      */
 template<auto MoveMetric>
-using agg_metric = dev::sum_metric<MoveMetric, [](auto const& sum, auto const&) { return sum; }>;
+using agg_metric = dev::sum_board_metric<MoveMetric, [](auto const& sum, uint32_t) { return sum; }>;
 
 /**
      * returns avg of move metric (double)
      */
 template<auto MoveMetric>
-using avg_metric = dev::sum_metric<MoveMetric, [](auto const& sum, auto const& in) {
-    return static_cast<double>(sum) / static_cast<double>(in.piecesPlaced);
+using avg_metric = dev::sum_board_metric<MoveMetric, [](auto const& sum, uint32_t pieces_placed) {
+    return static_cast<double>(sum) / static_cast<double>(pieces_placed);
 }>;
 }
 
 namespace ta3::ai::metric::dev {
 
-using agg_max_height_t = agg_metric<max_height>;
-using agg_bumpiness_t = agg_metric<bumpiness>;
-using avg_max_height_t = avg_metric<max_height>;
-using avg_holes_t = avg_metric<holes>;
-using avg_hole_depths_t = avg_metric<hole_depths>;
+// the board metrics above are f(board); sum_board_metric feeds MoveMetric(board, lines_cleared),
+// so lift each into a move metric that ignores lines_cleared.
+using agg_max_height_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
+using agg_bumpiness_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return bumpiness(b); }>;
+using avg_max_height_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
+using avg_holes_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return holes(b); }>;
+using avg_hole_depths_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return hole_depths(b); }>;
 
-/** total lines cleared this game */
-using total_lines_cleared_t = agg_metric<lines_cleared>;
-
+// total lines cleared over the game -- the move contribution is lines_cleared itself.
+using total_lines_cleared_t = agg_metric<[](sim::Board2 const&, uint32_t lines_cleared) {
+    return static_cast<size_t>(lines_cleared);
+}>;
 
 
 using clears_agg_t = std::array<size_t, sim::BLOCKS + 1>;
 
-using total_clears_t = game_metric<
-    [](clears_agg_t& agg, input_t const& in) { ++agg[lines_cleared(in)]; },
+using total_clears_t = stateful_metric<
+    [](clears_agg_t& agg, sim::Board2 const&, uint32_t lines_cleared) { ++agg[lines_cleared]; },
     clears_agg_t{},
-    [](clears_agg_t const& agg, input_t const&) { return std::span{agg}; }
+    [](clears_agg_t const& agg, uint32_t) { return std::span{agg}; }
 >;
 
 /** holes gained over the last placement; negative when a clear freed trapped cells */
@@ -227,13 +117,13 @@ struct holes_delta_t {
     size_t cur = 0;
 };
 
-using new_holes_t = game_metric<
-    [](holes_delta_t& agg, input_t const& in) {
+using new_holes_t = stateful_metric<
+    [](holes_delta_t& agg, sim::Board2 const& board, uint32_t) {
         agg.prev = agg.cur;
-        agg.cur = holes(in);
+        agg.cur = holes(board);
     },
     holes_delta_t{},
-    [](holes_delta_t const& d, input_t const&) { return static_cast<double>(d.cur) - static_cast<double>(d.prev); }
+    [](holes_delta_t const& d, uint32_t) { return static_cast<double>(d.cur) - static_cast<double>(d.prev); }
 >;
 }
 

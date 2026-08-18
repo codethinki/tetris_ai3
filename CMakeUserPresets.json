@@ -1,63 +1,100 @@
 {
-  "version": 3,
+  "version": 9,
+  "include": [
+    "CMakePresets.json"
+  ],
   "configurePresets": [
     {
-      "name": "cth-debug",
+      "name": "adaptivecpp-root",
       "hidden": true,
+      "environment": {
+        "TA3_ACPP_ROOT": "E:/cs/code/cpp/compiler/adaptivecpp/release-latest"
+      },
       "cacheVariables": {
-        "cth_ROOT": "${sourceDir}/../cth/out/install/msvc_debug"
+        "AdaptiveCpp_ROOT": "$env{TA3_ACPP_ROOT}",
+        "ACPP_CLANG": "$env{TA3_ACPP_ROOT}/bin/clang++"
       }
     },
     {
-      "name": "cth-release",
+      "name": "cth-release-base",
       "hidden": true,
       "cacheVariables": {
-        "cth_ROOT": "${sourceDir}/../cth/out/install/msvc_release"
+        "cth_ROOT": "E:/cs/code/cpp/repo/cth/out/install/msvc_release"
       }
     },
     {
-      "name": "lib-debug",
+      "name": "cth-debug-base",
       "hidden": true,
-      "inherits": [ "cth-debug" ]
+      "cacheVariables": {
+        "cth_ROOT": "E:/cs/code/cpp/repo/cth/out/install/msvc_debug"
+      }
     },
     {
-      "name": "lib-release",
+      "name": "lib-debug-base",
       "hidden": true,
-      "inherits": [ "cth-release" ]
+      "inherits": [ "cth-debug-base" ]
+    },
+    {
+      "name": "lib-release-base",
+      "hidden": true,
+      "inherits": [ "adaptivecpp-root", "cth-release-base" ]
     },
     {
       "name": "debug-base",
       "hidden": true,
-      "inherits": [ "global-debug-base", "lib-debug" ]
+      "inherits": [ "global-debug-base", "lib-debug-base" ]
     },
+
     {
       "name": "release-base",
       "hidden": true,
-      "inherits": [ "global-release-base", "lib-release" ]
+      "inherits": [ "global-release-base", "lib-release-base" ]
     },
     {
-      "name": "msvc_debug",
+      "name": "reldebug-base",
+      "hidden": true,
+      "inherits": [ "global-reldebug-base", "lib-release-base" ]
+    },
+    {
+      "name": "msvc_reldebug_sycl",
       "inherits": [
         "msvc-base",
+        "sycl-base",
+        "reldebug-base"
+      ]
+    },
+    {
+      "name": "msvc_release_sycl",
+      "inherits": [
+        "msvc-base",
+        "sycl-base",
+        "release-base"
+      ]
+    },
+
+    {
+      "name": "msvc_debug_cuda",
+      "inherits": [
+        "msvc-base",
+        "cuda-base",
         "debug-base"
       ]
     },
     {
-      "name": "msvc_release",
+      "name": "msvc_reldebug_cuda",
       "inherits": [
         "msvc-base",
-        "release-base"
+        "cuda-base",
+        "reldebug-base"
       ]
-    }
-  ],
-  "buildPresets": [
-    {
-      "name": "msvc_debug",
-      "configurePreset": "msvc_debug"
     },
     {
-      "name": "msvc_release",
-      "configurePreset": "msvc_release"
+      "name": "msvc_release_cuda",
+      "inherits": [
+        "msvc-base",
+        "cuda-base",
+        "release-base"
+      ]
     }
   ]
 }
