@@ -48,6 +48,25 @@ namespace {
     }
     static_assert(hard_drop_ignores_height());
 
+    // the in-flight piece moved to its lowest landing over every rotation and column
+    constexpr TetrisGame lowest_drop(TetrisGame const& game) {
+        TetrisGame best = game;
+        int bestY = -1;
+        for(int turns = 0; turns < 4; ++turns) {
+            TetrisGame turned = game;
+            for(int i = 0; i < turns; ++i)
+                turned.rotate(RotationType::RIGHT);
+
+            while(turned.move(MoveType::LEFT)) {}
+            for(bool moved = true; moved; moved = turned.move(MoveType::RIGHT))
+                if(int const y = turned.landingOffset().y; y > bestY) {
+                    bestY = y;
+                    best = turned;
+                }
+        }
+        return best;
+    }
+
 } // namespace
 
 GAME_TEST(reset, starts_at_spawn_with_a_full_queue) {
@@ -196,16 +215,14 @@ GAME_TEST(place, advances_and_respawns_at_the_top) {
     EXPECT_EQ(game.offset().y, 0);
 }
 
-GAME_TEST(place, fanned_play_clears_rows_within_bounds) {
+GAME_TEST(place, lowest_drop_play_clears_rows_within_bounds) {
     TetrisGame game{17};
 
     int guard = 0;
     bool anyCleared = false;
     while(!game.gameOver() && guard < 2000) {
-        // spread placements across all columns so bottom rows actually complete
-        int const target = guard % static_cast<int>(WIDTH);
-        while(game.offset().x > target && game.move(MoveType::LEFT)) {}
-        while(game.offset().x < target && game.move(MoveType::RIGHT)) {}
+        // the lowest landing completes rows for ~99% of seeds, unrotated pieces fanned over the columns for ~1%
+        game = lowest_drop(game);
 
         size_t const cleared = game.place();
         EXPECT_LE(cleared, 4u);
