@@ -1,0 +1,42 @@
+name: Windows Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      preset:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Windows (${{ inputs.preset }})
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash # Forces Git Bash for consistency with Linux scripts
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/setup-windows
+
+      - uses: ./.github/actions/setup-cuda
+        with:
+          version: 13.3.1
+
+      - name: Build
+        uses: ./.github/actions/build-ta3
+        with:
+          cache_prefix: windows
+          preset: ${{ inputs.preset }}
+
+      - name: Test
+        uses: ./.github/actions/test-ta3
+        with:
+          preset: ${{ inputs.preset }}
