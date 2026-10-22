@@ -14,15 +14,10 @@
       }
     },
     {
-      "name": "acpp-cth-base",
-      "hidden": true,
-      "inherits": "cth-release-base"
-    },
-    {
       "name": "acpp-base",
       "hidden": true,
       "generator": "Ninja",
-      "inherits": [ "adaptivecpp_base", "acpp-cth-base" ],
+      "inherits": [ "adaptivecpp_base" ],
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/../../../lib/cth_cmake/toolchain.cmake",
         "ACPP_TARGETS": "generic"

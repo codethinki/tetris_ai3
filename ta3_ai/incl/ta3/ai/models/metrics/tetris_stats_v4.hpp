@@ -12,6 +12,7 @@ using stats_v4 = metric::tetris_stats<
     //score
     metric::total_clears,
     metric::avg_max_height,
+    metric::max_height,
     metric::avg_hole_depths
 >;
 

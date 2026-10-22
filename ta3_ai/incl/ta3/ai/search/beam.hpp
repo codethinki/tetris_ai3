@@ -3,6 +3,8 @@
 #include "ta3/ai/search/search.hpp"
 #include "ta3/ai/search/variation_sequences.hpp"
 
+#include <ta3/sim/tetris_state.hpp>
+
 #include <ta3/sim/board2.hpp>
 #include <ta3/sim/tetris_engine.hpp>
 #include <ta3/sim/utility/cuda_constant.hpp>
@@ -478,10 +480,11 @@ namespace dev {
  *  model_t feature is mirror-invariant.
  * @tparam Ks per-level beam widths (default @ref BEAM_WIDTHS).
  * @param model model(clear_t, sim::Board2 const&) -> value_t.
+ * @param state board and piece state to search.
  * @return best root move + looked-ahead score, or a result with @c none() true if game over / no legal move.
  */
 template<beam_widths_t Ks = BEAM_WIDTHS, class Model>
-[[nodiscard]] constexpr search_result search_move_beam(sim::TetrisEngine const& game, Model const& model) {
+[[nodiscard]] constexpr search_result search_move_beam(sim::TetrisState const& state, Model const& model) {
     static_assert(
         [] {
             for(auto const width : Ks)
@@ -497,12 +500,12 @@ template<beam_widths_t Ks = BEAM_WIDTHS, class Model>
     constexpr auto leafOrderCount = leaf_orders(last_width(Ks));
     constexpr auto orderCount = order_span(Ks);
 
-    if(game.gameOver())
+    if(state.gameOver)
         return {};
 
-    auto const slot = gather_slots(game.currentPiece(), game.heldPiece(), game.lookahead());
-    auto const& tree = dev::PLAN_TREES[game.heldPiece() == sim::TetrisEngine::NO_PIECE ? 1 : 0];
-    auto board = game.board();
+    auto const slot = gather_slots(state.current, state.held, state.lookahead);
+    auto const& tree = dev::PLAN_TREES[state.held == sim::NO_PIECE ? 1 : 0];
+    auto board = state.board;
 
     // stage 0: score and select the roots
     auto rootScores = dev::score_roots(tree, slot, board, model);

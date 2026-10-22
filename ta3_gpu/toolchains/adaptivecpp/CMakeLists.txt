@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 4.1.1)
 # subproject to compile with adaptive cpp
 project(ta3_gpu_sycl LANGUAGES CXX VERSION 1.0.0)
 
@@ -36,7 +36,12 @@ target_compile_definitions(ta3_gpu_sycl PRIVATE _USE_STD_VECTOR_ALGORITHMS=0)
 # (newest), exactly like the parent MSVC build does.
 #list(APPEND CMAKE_IGNORE_PREFIX_PATH "${AdaptiveCpp_ROOT}")
 
-find_package(cth CONFIG REQUIRED)
+# the superbuild's cth (-DTA3_CTH_DIR), header only core: nothing of cth compiles a second time
+set(CTH_BUILD_OS OFF)
+set(CTH_BUILD_CORO OFF)
+set(CTH_BUILD_NET OFF)
+set(CTH_BUILD_WIN OFF)
+add_subdirectory("${TA3_CTH_DIR}" "${CMAKE_BINARY_DIR}/lib/cth" EXCLUDE_FROM_ALL)
 
 target_link_libraries(ta3_gpu_sycl PRIVATE cth::cth)
 

@@ -12,5 +12,5 @@ https://github.com/user-attachments/assets/00136c72-7955-40dc-ba97-96c470c4e049
 
 ### Build & Run
 - The project compiles on windows & linux with gcc or msvc and uses vcpkg. 
-- Additionally it requires to be pointed at the install output of (cth)[https://github.com/codethinki/cth]
+- [cth](https://github.com/codethinki/cth) and [cth_cmake](https://github.com/codethinki/cth_cmake) are submodules in `lib/`, clone with `git clone --recursive`
 - For compiling with the sycl backend, the sycl compiler is needed.

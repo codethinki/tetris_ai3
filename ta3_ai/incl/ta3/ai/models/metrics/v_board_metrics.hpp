@@ -100,8 +100,9 @@ class fuse_v_board_metrics {
     results_t _results;
 
 public:
-    constexpr explicit fuse_v_board_metrics(sim::Board2 const& board)
-        : _results{dev::run_v_metrics<Vs...>(board)} {}
+    constexpr explicit fuse_v_board_metrics(sim::Board2 const& board) : _results{dev::run_v_metrics<Vs...>(
+        board
+    )} {}
 
     template<class V>
     [[nodiscard]] constexpr auto get() const { return std::get<dev::index_of<V, Vs...>()>(_results); }
@@ -121,13 +122,15 @@ namespace ta3::ai::metric {
  */
 template<v_board_metric M, data_t N>
 struct norm_vboard_metric_t : M {
-    [[nodiscard]] constexpr data_t get() const { return static_cast<data_t>(M::get()) / static_cast<data_t>(N); }
+    [[nodiscard]] constexpr data_t get() const {
+        return static_cast<data_t>(M::get()) / static_cast<data_t>(N);
+    }
 };
 }
 
 namespace ta3::ai::metric {
 
-struct holes_t : v_board_metric_base {
+struct board_holes_t : v_board_metric_base {
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) {
         sum += c.board.height(c.x) - static_cast<std::size_t>(sim::popcount(c.board.raw_column(c.x)));
@@ -137,19 +140,19 @@ struct holes_t : v_board_metric_base {
 
 
 
-struct agg_height_t : v_board_metric_base {
+struct board_agg_height_t : v_board_metric_base {
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) { sum += c.board.height(c.x); }
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct max_height_t : v_board_metric_base {
+struct board_max_height_t : v_board_metric_base {
     std::size_t max = 0;
     constexpr void step(col_ctx const& c) { max = std::max(max, c.board.height(c.x)); }
     [[nodiscard]] constexpr std::size_t get() const { return max; }
 };
 
-struct surface_variance_t : v_board_metric_base {
+struct board_surface_var_t : v_board_metric_base {
     static constexpr auto INVALID = std::numeric_limits<std::size_t>::max();
     std::size_t prevHeight = INVALID;
     int sum = 0;
@@ -164,7 +167,7 @@ struct surface_variance_t : v_board_metric_base {
     [[nodiscard]] constexpr data_t get() const { return fsqrt(static_cast<float>(sum)); }
 };
 
-struct y_transitions_t : v_board_metric_base {
+struct board_y_transitions_t : v_board_metric_base {
     static constexpr std::uint32_t FIELD = (std::uint32_t{1} << sim::HEIGHT) - 1;
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) {
@@ -174,7 +177,7 @@ struct y_transitions_t : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct hole_depths_t : v_board_metric_base {
+struct board_hole_depths_t : v_board_metric_base {
     std::size_t sum = 0;
     constexpr void step(col_ctx const& c) {
         constexpr auto h = sim::HEIGHT;
@@ -188,7 +191,7 @@ struct hole_depths_t : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct bumpiness_t : v_board_metric_base {
+struct board_bumpiness_t : v_board_metric_base {
     static constexpr auto INVALID = std::numeric_limits<std::size_t>::max();
     std::size_t prevHeight = INVALID;
     std::size_t sum = 0;
@@ -201,7 +204,7 @@ struct bumpiness_t : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return sum; }
 };
 
-struct wells_t : v_board_metric_base {
+struct board_wells_t : v_board_metric_base {
     static constexpr std::size_t WELL_DEPTH = 3;
     std::size_t count = 0;
     constexpr void step(col_ctx const& c) {
@@ -210,12 +213,10 @@ struct wells_t : v_board_metric_base {
         if(x == 0) {
             if(b.height(1) >= b.height(0) + WELL_DEPTH)
                 ++count;
-        }
-        else if(x + 1 == sim::WIDTH) {
+        } else if(x + 1 == sim::WIDTH) {
             if(b.height(sim::WIDTH - 2) >= b.height(sim::WIDTH - 1) + WELL_DEPTH)
                 ++count;
-        }
-        else {
+        } else {
             auto const h = b.height(x);
             if(b.height(x - 1) >= h + WELL_DEPTH && b.height(x + 1) >= h + WELL_DEPTH)
                 ++count;
@@ -224,29 +225,29 @@ struct wells_t : v_board_metric_base {
     [[nodiscard]] constexpr std::size_t get() const { return count; }
 };
 
-using norm_holes_t = norm_vboard_metric_t<holes_t, data_t{20}>;
-using norm_hole_depths_t = norm_vboard_metric_t<hole_depths_t, data_t{200}>;
-using norm_surface_var_t = norm_vboard_metric_t<surface_variance_t, data_t{100}>;
-using norm_agg_height_t = norm_vboard_metric_t<agg_height_t, data_t{200}>;
-using norm_y_transitions_t = norm_vboard_metric_t<y_transitions_t, data_t{40}>;
-using norm_wells_t = norm_vboard_metric_t<wells_t, data_t{5}>;
+using board_norm_holes_t = norm_vboard_metric_t<board_holes_t, data_t{20}>;
+using board_norm_hole_depths_t = norm_vboard_metric_t<board_hole_depths_t, data_t{200}>;
+using board_norm_surface_var_t = norm_vboard_metric_t<board_surface_var_t, data_t{100}>;
+using board_norm_agg_height_t = norm_vboard_metric_t<board_agg_height_t, data_t{200}>;
+using board_norm_y_transitions_t = norm_vboard_metric_t<board_y_transitions_t, data_t{40}>;
+using board_norm_wells_t = norm_vboard_metric_t<board_wells_t, data_t{5}>;
 
 
-inline constexpr auto holes = board_metric<holes_t>;
-inline constexpr auto agg_height = board_metric<agg_height_t>;
-inline constexpr auto max_height = board_metric<max_height_t>;
-inline constexpr auto surface_variance = board_metric<surface_variance_t>;
-inline constexpr auto y_transitions = board_metric<y_transitions_t>;
-inline constexpr auto hole_depths = board_metric<hole_depths_t>;
-inline constexpr auto bumpiness = board_metric<bumpiness_t>;
-inline constexpr auto wells = board_metric<wells_t>;
+inline constexpr auto board_holes = board_metric<board_holes_t>;
+inline constexpr auto board_agg_height = board_metric<board_agg_height_t>;
+inline constexpr auto board_max_height = board_metric<board_max_height_t>;
+inline constexpr auto board_surface_var = board_metric<board_surface_var_t>;
+inline constexpr auto board_y_transitions = board_metric<board_y_transitions_t>;
+inline constexpr auto board_hole_depths = board_metric<board_hole_depths_t>;
+inline constexpr auto board_bumpiness = board_metric<board_bumpiness_t>;
+inline constexpr auto board_wells = board_metric<board_wells_t>;
 
 // normalised metric callables -- successors of the former metric.hpp norm_* lambdas.
-inline constexpr auto norm_holes = board_metric<norm_holes_t>;
-inline constexpr auto norm_hole_depths = board_metric<norm_hole_depths_t>;
-inline constexpr auto norm_surface_var = board_metric<norm_surface_var_t>;
-inline constexpr auto norm_agg_height = board_metric<norm_agg_height_t>;
-inline constexpr auto norm_y_transitions = board_metric<norm_y_transitions_t>;
-inline constexpr auto norm_wells = board_metric<norm_wells_t>;
+inline constexpr auto board_norm_holes = board_metric<board_norm_holes_t>;
+inline constexpr auto board_norm_hole_depths = board_metric<board_norm_hole_depths_t>;
+inline constexpr auto board_norm_surface_var = board_metric<board_norm_surface_var_t>;
+inline constexpr auto board_norm_agg_height = board_metric<board_norm_agg_height_t>;
+inline constexpr auto board_norm_y_transitions = board_metric<board_norm_y_transitions_t>;
+inline constexpr auto board_norm_wells = board_metric<board_norm_wells_t>;
 
 } // namespace ta3::ai::metric

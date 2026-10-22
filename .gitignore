@@ -3,3 +3,5 @@ vcpkg_installed/
 out/
 .idea/
 *.nsys-rep
+.trash/
+*.log

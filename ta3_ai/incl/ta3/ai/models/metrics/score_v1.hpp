@@ -9,6 +9,9 @@ inline constexpr double SURVIVAL_WEIGHT = 0.02;
 inline constexpr double AVG_HEIGHT_WEIGHT = 1.0;
 inline constexpr double AVG_HEIGHT_BUDGET = 12.0;
 inline constexpr double AVG_HOLE_DEPTHS_WEIGHT = 1.5;
+inline constexpr double MAX_HEIGHT_WEIGHT = 1;
+inline constexpr double AVG_MAX_HEIGHT_BUDGET = 8;
+inline constexpr double MAX_HEIGHT_BUDGET = 12.0;
 // TA3_CUDA_CONSTANT: indexed with a runtime value from device code (the kernel scores games with
 // score_v4); a plain host constexpr array there silently compiles to a device trap.
 TA3_CUDA_CONSTANT double PAYOUTS[] = {0.0, 0.2, 0.8, 2.0, 10.0};
@@ -25,12 +28,15 @@ constexpr auto score_v1 = [][[nodiscard]](auto const& stats) {
     auto const survivalBonus = SURVIVAL_WEIGHT * static_cast<double>(stats.piecesPlaced());
 
 
-    auto const avgMaxHeight = stats.get(metric::avg_max_height);
+    auto const avgMaxHeightScore = std::max(stats.get(metric::avg_max_height) - AVG_HEIGHT_BUDGET, 0.0);
+    auto const avgMaxHeightPenalty = avgMaxHeightScore * AVG_HEIGHT_WEIGHT;
 
-    auto const avgMaxHeightPenalty = std::max(avgMaxHeight - AVG_HEIGHT_BUDGET, 0.) * AVG_HEIGHT_WEIGHT;
+    auto const maxHeightScore = std::max(static_cast<double>(stats.get(metric::max_height)) - MAX_HEIGHT_BUDGET, 0.0);
+    auto const maxHeightPenalty = maxHeightScore * maxHeightScore * MAX_HEIGHT_WEIGHT;
+
     auto const avgHolesPenalty = stats.get(metric::avg_hole_depths) * AVG_HOLE_DEPTHS_WEIGHT;
 
-    return clearBonus + survivalBonus - avgMaxHeightPenalty - avgHolesPenalty;
+    return clearBonus + survivalBonus - avgMaxHeightPenalty - maxHeightPenalty - avgHolesPenalty;
 };
 
 }

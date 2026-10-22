@@ -189,12 +189,12 @@ constexpr void eval_prefix(
  *  a grid-stride over prefixes and a float @c atomicMax for @c consider.
  */
 template<class Model>
-[[nodiscard]] constexpr search_result search_move_tiled(sim::TetrisEngine const& game, Model const& model) {
-    if(game.gameOver())
+[[nodiscard]] constexpr search_result search_move_tiled(sim::TetrisState const& state, Model const& model) {
+    if(state.gameOver)
         return {};
 
-    auto const& board = game.board();
-    auto const seqs = generate_sequences(game.currentPiece(), game.heldPiece(), game.lookahead());
+    auto const& board = state.board;
+    auto const seqs = generate_sequences(state.current, state.held, state.lookahead);
     auto const w = build_layout(seqs);
 
     search_result best;

@@ -1,5 +1,6 @@
 #pragma once
 #include "ta3/sim/board2.hpp"
+#include "ta3/sim/tetris_state.hpp"
 #include "ta3/sim/utility/xoshiro256ss.hpp"
 #include "ta3/sim/pieces/piece_defs.hpp"
 #include "ta3/sim/pieces/piece_offsets.hpp"
@@ -65,6 +66,8 @@ public:
         return std::span<PieceType const>{_queue}.subspan(1);
     }
 
+    [[nodiscard]] constexpr operator TetrisState() const;
+
 private:
     /** spawn: top orientation, 4x4 window centered horizontally */
     static constexpr vec2 SPAWN{static_cast<int>((WIDTH - PIECE_WIDTH) / 2), 0};
@@ -99,6 +102,18 @@ private:
 namespace ta3::sim {
 
 constexpr TetrisEngine::TetrisEngine(uint64_t seed) { reset(seed); }
+
+constexpr TetrisEngine::operator TetrisState() const {
+    TetrisState state{
+        .board = _board,
+        .current = currentPiece(),
+        .held = _held,
+        .gameOver = _gameOver
+    };
+    for(size_t i = 0; i < state.lookahead.size(); ++i)
+        state.lookahead[i] = _queue[i + 1];
+    return state;
+}
 
 constexpr void TetrisEngine::reset(uint64_t seed) {
     _board = Board2{};

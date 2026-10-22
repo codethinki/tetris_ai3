@@ -6,6 +6,7 @@
 #include <ta3/sim/utility/cuda_constant.hpp>
 #include <ta3/sim/utility/placement.hpp>
 #include <ta3/sim/tetris_engine.hpp>
+#include <ta3/sim/tetris_state.hpp>
 #include <ta3/sim/pieces/piece_defs.hpp>
 
 #include <array>
@@ -105,7 +106,7 @@ namespace dev {
 
 /**
  * depth-@ref DEPTH brute lookahead for one game.
- * @param game  the committed game state (left untouched)
+ * @param state the committed board and piece state
  * @param model device value model: @c model(clear_t clearAccum, sim::Board2 const& canonicalLeaf) -> value_t
  * @return the best root move + its looked-ahead value, or a result with @c none() true if the game is over / has no move
  * @details expands every hold-resolved sequence (@ref generate_sequences) and, under it, the full
@@ -114,12 +115,12 @@ namespace dev {
  *  depth-1 leaf.
  */
 template<class Model>
-[[nodiscard]] constexpr search_result search_move(sim::TetrisEngine const& game, Model const& model) {
-    if(game.gameOver())
+[[nodiscard]] constexpr search_result search_move(sim::TetrisState const& state, Model const& model) {
+    if(state.gameOver)
         return {};
 
-    auto const& board = game.board();
-    auto const sequences = generate_sequences(game.currentPiece(), game.heldPiece(), game.lookahead());
+    auto const& board = state.board;
+    auto const sequences = generate_sequences(state.current, state.held, state.lookahead);
 
     search_result best{};
 

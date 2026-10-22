@@ -13,7 +13,6 @@ target_include_directories(
 )
 
 
-find_package(cth CONFIG REQUIRED COMPONENTS cth coro)
 find_package(pagmo CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS serialization)
 find_package(Eigen3 CONFIG REQUIRED)

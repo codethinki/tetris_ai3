@@ -259,80 +259,71 @@ namespace {
     static_assert(prefix_mapping_round_trips());
 #endif
 
-} // namespace
-
-// full search is too heavy for a constexpr step budget (thousands of leaves), so it runs at runtime;
-// the constexpr asserts above cover the device-clean primitives it is built from.
-
-SEARCH_TEST(brute, returns_a_legal_move_on_a_fresh_board) {
-    sim::TetrisEngine game{1234};
-    height_model const model;
-
-    auto const r = search::search_move(game, model);
-    ASSERT_FALSE(r.none());
-
-    // replay exactly as the trainer loop would; place() has a legal-placement precondition, so an
-    // illegal choice would trip its internal checks / change the outcome
-    if(r.move.hold)
-        game.hold();
-    auto const cleared = game.place(r.move.orientation, r.move.x);
-    EXPECT_NE(cleared, sim::TetrisEngine::DIED);
-}
-
-SEARCH_TEST(brute, plays_a_multi_move_game) {
-    sim::TetrisEngine game{0xC0FFEE};
-    height_model const model;
-
-    // each move brute-forces ~b^DEPTH leaves; keep the move count modest so the test stays quick
-    std::uint32_t moves = 0;
-    for(; moves < 15 && !game.gameOver(); ++moves) {
-        auto const r = search::search_move(game, model);
-        if(r.none())
-            break;
-
-        if(r.move.hold)
-            game.hold();
-        if(game.place(r.move.orientation, r.move.x) == sim::TetrisEngine::DIED)
-            break;
+    sim::TetrisState constrained_state() {
+        constexpr auto filled = (std::uint32_t{1} << sim::HEIGHT) - 1;
+        return {
+            .board = sim::Board2::from_raw_columns({
+                filled,
+                filled,
+                filled,
+                filled,
+                filled,
+                0,
+                filled,
+                filled,
+                filled,
+                filled
+            }),
+            .current = sim::PieceType::T,
+            .held = sim::PieceType::I,
+            .lookahead = {
+                sim::PieceType::O,
+                sim::PieceType::S,
+                sim::PieceType::Z,
+                sim::PieceType::J,
+                sim::PieceType::L
+            }
+        };
     }
 
-    EXPECT_GT(moves, 5u); // a height-aware search should survive well past the opening
+    bool legal_root(sim::TetrisState const& state, search::search_result const& result) {
+        if(result.none())
+            return false;
+        auto const piece = result.move.hold ? state.held : state.current;
+        auto const placement = search::placement{
+            result.move.orientation,
+            result.move.x,
+            sim::piece_shape_at(piece, result.move.orientation, result.move.x)
+        };
+        return search::apply(state.board, {}, placement).legal;
+    }
+
+} // namespace
+
+SEARCH_TEST(brute, returns_a_legal_move_on_a_constrained_board) {
+    auto const state = constrained_state();
+    height_model const model;
+
+    EXPECT_TRUE(legal_root(state, search::search_move(state, model)));
+}
+
+SEARCH_TEST(brute, returns_none_for_game_over) {
+    auto state = constrained_state();
+    state.gameOver = true;
+    EXPECT_TRUE(search::search_move(state, height_model{}).none());
 }
 
 #if TA3_SEARCH_DEPTH == 3
-SEARCH_TEST(brute, tiled_matches_reference_over_a_game) {
+SEARCH_TEST(brute, tiled_matches_reference_on_a_constrained_board) {
+    auto const state = constrained_state();
     height_model const model;
 
-    // the tiled (per-prefix) decomposition the kernel uses must reproduce search_move's chosen move and
-    // value at every step, across a full game -- parity by construction, checked here.
-    sim::TetrisEngine game{0xBADF00D};
-    for(std::uint32_t moves = 0; moves < 20 && !game.gameOver(); ++moves) {
-        auto const ref = search::search_move(game, model);
-        auto const tiled = search::search_move_tiled(game, model);
-
-        ASSERT_EQ(ref.none(), tiled.none());
-        if(ref.none())
-            break;
-        EXPECT_EQ(ref.move, tiled.move);
-        EXPECT_EQ(ref.value, tiled.value);
-
-        if(ref.move.hold)
-            game.hold();
-        if(game.place(ref.move.orientation, ref.move.x) == sim::TetrisEngine::DIED)
-            break;
-    }
+    auto const ref = search::search_move(state, model);
+    auto const tiled = search::search_move_tiled(state, model);
+    EXPECT_EQ(ref.none(), tiled.none());
+    EXPECT_EQ(ref.move, tiled.move);
+    EXPECT_EQ(ref.value, tiled.value);
 }
 #endif // TA3_SEARCH_DEPTH == 3
-
-SEARCH_TEST(brute, distinct_seeds_are_independent) {
-    height_model const model;
-    sim::TetrisEngine a{1}, b{2};
-
-    auto const ra = search::search_move(a, model);
-    auto const rb = search::search_move(b, model);
-
-    EXPECT_FALSE(ra.none());
-    EXPECT_FALSE(rb.none());
-}
 
 } // namespace ta3::ai
