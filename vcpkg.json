@@ -6,6 +6,7 @@
     "glm",
     "gtest",
     "gtl",
+    "libhv",
     "pagmo2",
     "raylib",
     "zstd",
