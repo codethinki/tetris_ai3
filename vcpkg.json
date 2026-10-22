@@ -1,9 +1,11 @@
 {
   "dependencies": [
-    "boost-asio",
+    "asio",
+    "boost-pfr",
     "boost-serialization",
     "glm",
     "gtest",
+    "gtl",
     "pagmo2",
     "raylib",
     "zstd",

@@ -13,7 +13,6 @@ target_include_directories(
 )
 
 
-find_package(cth CONFIG REQUIRED COMPONENTS cth)
 find_package(glm CONFIG REQUIRED)
 find_package(raylib CONFIG REQUIRED)
 

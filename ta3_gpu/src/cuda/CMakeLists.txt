@@ -15,7 +15,6 @@ cth_target_enable_build_cache(ta3_gpu_cuda OPTIONAL)
 # no public incl of its own -- the public header lives in the parent ta3_gpu target.
 target_include_directories(ta3_gpu_cuda PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/../../incl")
 
-find_package(cth CONFIG REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
 target_link_libraries(ta3_gpu_cuda PUBLIC cth::cth ta3::sim ta3::ai CUDA::cudart)

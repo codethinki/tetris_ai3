@@ -2,3 +2,7 @@
 	path = lib/cth_cmake
 	url = https://github.com/codethinki/cth_cmake
 	branch = main
+[submodule "lib/cth"]
+	path = lib/cth
+	url = https://github.com/codethinki/cth
+	branch = master

@@ -4,7 +4,8 @@ include(ExternalProject)
 find_package(AdaptiveCpp CONFIG REQUIRED)
 
 # the bundled clang++ always lives in the acpp install tree AdaptiveCpp_ROOT points at
-set(ACPP_CLANGXX "${AdaptiveCpp_ROOT}/bin/clang++${CMAKE_EXECUTABLE_SUFFIX}" CACHE FILEPATH "AdaptiveCpp bundled clang++")
+# not cached: it follows AdaptiveCpp_ROOT when the preset moves it
+set(_acpp_clangxx "${AdaptiveCpp_ROOT}/bin/clang++${CMAKE_EXECUTABLE_SUFFIX}")
 
 
 # acpp deploy constants
@@ -64,8 +65,9 @@ ExternalProject_Add(ta3_gpu_sycl_adaptivecpp
         --preset acpp-$<LOWER_CASE:$<CONFIG>>
         -S <SOURCE_DIR>
         -B <BINARY_DIR>
-        -DCMAKE_CXX_COMPILER=${ACPP_CLANGXX}
+        -DCMAKE_CXX_COMPILER=${_acpp_clangxx}
         -DCMAKE_INSTALL_PREFIX=${_dev_install}
+        -DTA3_CTH_DIR=${TA3_CTH_DIR}
         -DTA3_SIM_INCL=${CMAKE_SOURCE_DIR}/ta3_sim/incl
         -DTA3_AI_INCL=${CMAKE_SOURCE_DIR}/ta3_ai/incl
         -DTA3_GPU_INCL=${CMAKE_CURRENT_SOURCE_DIR}/../../incl
