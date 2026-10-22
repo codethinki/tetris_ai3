@@ -1,0 +1,76 @@
+{
+  "version": 9,
+  "configurePresets": [
+    {
+      "name": "ci-vcpkg",
+      "hidden": true,
+      "cacheVariables": {
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
+      },
+      "environment": {
+        "VCPKG_BINARY_SOURCES": "clear;nuget,GitHub,readwrite"
+      }
+    },
+    {
+      "name": "ci-buildcache",
+      "hidden": true,
+      "environment": {
+        "BUILDCACHE_DIR": "${sourceDir}/.buildcache",
+        "BUILDCACHE_ACCURACY": "SLOPPY",
+        "BUILDCACHE_MAX_CACHE_SIZE": "524288000"
+      }
+    },
+    {
+      "name": "ci-config-base",
+      "hidden": true,
+      "inherits": [
+        "ci-vcpkg",
+        "ci-buildcache"
+      ]
+    },
+    {
+      "name": "ci_windows_msvc_cuda",
+      "inherits": [
+        "ci-config-base",
+        "msvc-base",
+        "cuda-base",
+        "global-release-base"
+      ]
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ci-build-base",
+      "hidden": true,
+      "configuration": "Release"
+    },
+    {
+      "name": "ci_windows_msvc_cuda",
+      "configurePreset": "ci_windows_msvc_cuda",
+      "inherits": "ci-build-base"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "ci-test-base",
+      "hidden": true,
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "filter": {
+        "exclude": {
+          "name": "^GpuModelEval\\."
+        }
+      }
+    },
+    {
+      "name": "ci_windows_msvc_cuda",
+      "configurePreset": "ci_windows_msvc_cuda",
+      "inherits": "ci-test-base"
+    }
+  ]
+}

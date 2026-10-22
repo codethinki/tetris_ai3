@@ -1,0 +1,57 @@
+name: 'Setup CUDA'
+description: 'Installs the CUDA compiler packages, cached per version'
+inputs:
+  version:
+    description: 'full CUDA version, e.g. 13.3.1'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve paths
+      id: paths
+      shell: bash
+      run: |
+        short="${{ inputs.version }}"
+        short="${short%.*}"
+        echo "short=$short" >> $GITHUB_OUTPUT
+        echo "dir=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v$short" >> $GITHUB_OUTPUT
+
+    - name: Restore CUDA
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.paths.outputs.dir }}
+        key: cuda-${{ inputs.version }}-nvcc-cudart-crt-nvvm
+
+    # nvcc only, the runners have no gpu: compiler, runtime, its headers and the device compiler
+    - name: Install CUDA
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $version = "${{ inputs.version }}"
+        $short = "${{ steps.paths.outputs.short }}"
+        $installer = "$env:RUNNER_TEMP\cuda_network.exe"
+        curl.exe -fsSL -o $installer "https://developer.download.nvidia.com/compute/cuda/$version/network_installers/cuda_${version}_windows_network.exe"
+
+        $packages = "nvcc", "cudart", "crt", "nvvm" | ForEach-Object { "${_}_$short" }
+        $process = Start-Process -FilePath $installer -ArgumentList (@("-s") + $packages) -Wait -PassThru
+        if ($process.ExitCode -ne 0) {
+           Write-Error "CUDA installer failed with exit code $($process.ExitCode)"
+           exit 1
+        }
+
+    # the installer sets CUDA_PATH for new processes only; cuda 13 keeps its dlls in bin\x64
+    - name: Set environment
+      shell: pwsh
+      run: |
+        $dir = "${{ steps.paths.outputs.dir }}"
+        if (-not (Test-Path "$dir\bin\nvcc.exe")) {
+           Write-Error "nvcc not found in $dir"
+           exit 1
+        }
+        "CUDA_PATH=$dir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "CUDACXX=$dir\bin\nvcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "$dir\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        "$dir\bin\x64" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        & "$dir\bin\nvcc.exe" --version
