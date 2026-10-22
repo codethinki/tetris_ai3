@@ -71,6 +71,8 @@ public:
     /** @brief the engine backing this game, for board metrics and the upcoming-piece queue */
     [[nodiscard]] constexpr TetrisEngine const& engine() const { return _engine; }
 
+    [[nodiscard]] constexpr operator TetrisState() const { return _engine; }
+
     /** @brief the type of the in-flight piece */
     [[nodiscard]] constexpr PieceType currentPiece() const { return _engine.currentPiece(); }
 

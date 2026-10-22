@@ -28,6 +28,13 @@ class Board2 {
 public:
     constexpr Board2() = default;
 
+    /** constructs a board from bit-columns where bit y is cell (x, y) */
+    [[nodiscard]] static constexpr Board2 from_raw_columns(std::array<std::uint32_t, WIDTH> columns) {
+        Board2 board;
+        board._cols = columns;
+        return board;
+    }
+
     /**
      * checks if @ref PieceType can be placed with @ref Orientation on @ref offset
      * @param offset place offset
