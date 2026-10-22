@@ -45,7 +45,9 @@ struct stateful_metric : stateful_metric_base {
     // gcc/clang; MSVC/nvcc are lenient) -- the aggregate must stay mutable for advance().
     using agg_t = std::remove_const_t<decltype(Initial)>;
 
-    constexpr void advance(sim::Board2 const& board, uint32_t lines_cleared) { Update(agg, board, lines_cleared); }
+    constexpr void advance(sim::Board2 const& board, uint32_t lines_cleared) {
+        Update(agg, board, lines_cleared);
+    }
     constexpr auto eval(uint32_t pieces_placed) const { return Combinator(agg, pieces_placed); }
 
     agg_t agg = Initial;
@@ -73,29 +75,54 @@ struct sum_board_metric : stateful_metric_base {
 };
 
 /**
-     * sums up the MoveMetric
-     */
+ * sums up the MoveMetric
+ */
 template<auto MoveMetric>
 using agg_metric = dev::sum_board_metric<MoveMetric, [](auto const& sum, uint32_t) { return sum; }>;
 
 /**
-     * returns avg of move metric (double)
-     */
+ * returns avg of move metric (double)
+ */
 template<auto MoveMetric>
 using avg_metric = dev::sum_board_metric<MoveMetric, [](auto const& sum, uint32_t pieces_placed) {
     return static_cast<double>(sum) / static_cast<double>(pieces_placed);
 }>;
+
+/**
+ * per-move maximum metric
+ * @tparam MoveMetric f(Board const& board, uint32_t lines_cleared) -> max_t
+ * @tparam Initial value before the first move, converted to max_t
+ * @note a struct, not a @ref stateful_metric alias: nvcc's front end loses an alias-template's
+ *  parameter inside lambdas written in the alias ("identifier MoveMetric is undefined"), so the
+ *  lambda body lives in a member function instead. semantics identical; required since the stat
+ *  block is committed on-device by the eval kernel.
+ */
+template<auto MoveMetric, auto Initial>
+struct max_metric : stateful_metric_base {
+    using max_t = std::invoke_result_t<decltype(MoveMetric), sim::Board2 const&, uint32_t>;
+
+    constexpr void advance(sim::Board2 const& board, uint32_t lines_cleared) {
+        max = std::max(max, MoveMetric(board, lines_cleared));
+    }
+    constexpr auto eval(uint32_t) const { return max; }
+
+    max_t max = Initial;
+};
+
+
+
 }
 
 namespace ta3::ai::metric::dev {
 
 // the board metrics above are f(board); sum_board_metric feeds MoveMetric(board, lines_cleared),
 // so lift each into a move metric that ignores lines_cleared.
-using agg_max_height_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
-using agg_bumpiness_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return bumpiness(b); }>;
-using avg_max_height_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return max_height(b); }>;
-using avg_holes_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return holes(b); }>;
-using avg_hole_depths_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return hole_depths(b); }>;
+using agg_max_height_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return board_max_height(b); }>;
+using agg_bumpiness_t = agg_metric<[](sim::Board2 const& b, uint32_t) { return board_bumpiness(b); }>;
+using avg_max_height_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return board_max_height(b); }>;
+using avg_holes_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return board_holes(b); }>;
+using avg_hole_depths_t = avg_metric<[](sim::Board2 const& b, uint32_t) { return board_hole_depths(b); }>;
+using max_height_t = max_metric<[](sim::Board2 const& b, uint32_t) { return board_max_height(b); }, 0>;
 
 // total lines cleared over the game -- the move contribution is lines_cleared itself.
 using total_lines_cleared_t = agg_metric<[](sim::Board2 const&, uint32_t lines_cleared) {
@@ -120,7 +147,7 @@ struct holes_delta_t {
 using new_holes_t = stateful_metric<
     [](holes_delta_t& agg, sim::Board2 const& board, uint32_t) {
         agg.prev = agg.cur;
-        agg.cur = holes(board);
+        agg.cur = board_holes(board);
     },
     holes_delta_t{},
     [](holes_delta_t const& d, uint32_t) { return static_cast<double>(d.cur) - static_cast<double>(d.prev); }
@@ -136,4 +163,5 @@ constexpr dev::total_clears_t total_clears{};
 constexpr dev::new_holes_t new_holes{};
 constexpr dev::avg_holes_t avg_holes{};
 constexpr dev::avg_hole_depths_t avg_hole_depths{};
+constexpr dev::max_height_t max_height{};
 }

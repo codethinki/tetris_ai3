@@ -75,19 +75,19 @@ public:
 
         // single fused column pass over the board, reading the normalised metrics directly (max_height raw)
         metric::fuse_v_board_metrics<
-            metric::norm_surface_var_t,
-            metric::norm_holes_t,
-            metric::norm_hole_depths_t,
-            metric::max_height_t,
-            metric::norm_wells_t
+            metric::board_norm_surface_var_t,
+            metric::board_norm_holes_t,
+            metric::board_norm_hole_depths_t,
+            metric::board_max_height_t,
+            metric::board_norm_wells_t
         > const m{board};
 
-        out[SURFACE_VARIANCE] = m.get<metric::norm_surface_var_t>();
-        out[HOLES] = m.get<metric::norm_holes_t>();
-        out[HOLE_DEPTHS] = m.get<metric::norm_hole_depths_t>();
-        out[MAX_HEIGHT] = static_cast<data_t>(m.get<metric::max_height_t>());
+        out[SURFACE_VARIANCE] = m.get<metric::board_norm_surface_var_t>();
+        out[HOLES] = m.get<metric::board_norm_holes_t>();
+        out[HOLE_DEPTHS] = m.get<metric::board_norm_hole_depths_t>();
+        out[MAX_HEIGHT] = static_cast<data_t>(m.get<metric::board_max_height_t>());
         out[HELD_I] = held_is_i ? data_t{1} : data_t{0};
-        out[WELLS] = m.get<metric::norm_wells_t>();
+        out[WELLS] = m.get<metric::board_norm_wells_t>();
     }
 
     constexpr ModelV11() { init(); }

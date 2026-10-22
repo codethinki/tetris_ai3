@@ -72,10 +72,10 @@ public:
             rawScore += metric::CLEAR_SCORE_TABLE[k + 1] * static_cast<int>(n); // table indexed by LINES
         }
 
-        out[SURFACE_VARIANCE] = metric::norm_surface_var(board);
-        out[HOLES] = metric::norm_holes(board);
+        out[SURFACE_VARIANCE] = metric::board_norm_surface_var(board);
+        out[HOLES] = metric::board_norm_holes(board);
         out[CLEAR_SCORE] = static_cast<data_t>(rawScore) * CLEAR_SCORE_NORM;
-        out[AGG_HEIGHT] = metric::norm_agg_height(board);
+        out[AGG_HEIGHT] = metric::board_norm_agg_height(board);
     }
 
     constexpr ModelV7() { init(); }
